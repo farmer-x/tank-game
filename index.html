@@ -1,0 +1,1377 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#000000">
+<title>SCORCHED EARTH</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    background: #000; color: #ddd;
+    font-family: "Courier New", monospace;
+    height: 100%; width: 100%; overflow: hidden;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    touch-action: none; user-select: none; -webkit-user-select: none;
+  }
+  /* Stage fills the *visible* screen (dvh/dvw exclude browser chrome) */
+  #wrap {
+    position: absolute; top: 0; left: 0;
+    width: 100vw; height: 100vh;     /* fallback */
+    width: 100dvw; height: 100dvh;
+    display: flex; align-items: center; justify-content: center;
+    overflow: hidden;
+  }
+  canvas {
+    image-rendering: pixelated;
+    background: #000; display: block;
+    width: 100%; height: 100%;
+    object-fit: contain;            /* scale up, keep aspect, fill screen */
+    max-width: 100%; max-height: 100%;
+  }
+  #hint {
+    position: absolute; bottom: 4px; left: 8px;
+    font-size: 11px; color: #666; pointer-events: none;
+  }
+
+  /* ---- Force landscape: rotate the stage when phone is portrait ---- */
+  @media (orientation: portrait) {
+    #wrap {
+      width: 100vh; height: 100vw;
+      width: 100dvh; height: 100dvw;
+      top: 100dvh; left: 0;
+      transform-origin: left top;
+      transform: rotate(-90deg);
+    }
+  }
+
+  /* ---- Touch controls: overlaid in the screen corners ---- */
+  #touch { display: none; }
+  /* shown only during a human's battle turn */
+  #touch { display: none; }
+  body.touch.battle #touch { display: block; position: absolute; inset: 0; pointer-events: none; }
+  body.touch #hint { display: none; }
+  #touch > * { pointer-events: auto; }
+
+  /* ---- Sliders ---- */
+  .slider {
+    position: absolute; touch-action: none; overflow: hidden;
+    background: rgba(14,14,24,0.74); border: 2px solid #4a4a66; border-radius: 12px;
+    box-shadow: inset 0 2px 7px rgba(0,0,0,0.55), 0 2px 6px rgba(0,0,0,0.4);
+  }
+  .slider .fill { position: absolute; }
+  /* Chunky grip-knob (a bar you drag), with center grip lines */
+  .slider .knob {
+    position: absolute;
+    background: linear-gradient(#fff6c2, #ffe23b 45%, #e0a800);
+    border: 2px solid #fff; border-radius: 7px;
+    box-shadow: 0 2px 5px rgba(0,0,0,0.7), inset 0 1px 2px rgba(255,255,255,0.8);
+  }
+  .slider .lab { position: absolute; color: #9cf; font: bold 13px 'Courier New'; text-shadow: 0 1px 2px #000; pointer-events: none; }
+  .slider .val { position: absolute; color: #fff; font: bold 22px 'Courier New'; text-shadow: 0 1px 3px #000; pointer-events: none; }
+  .slider.grab { border-color: #ffe23b; }
+
+  /* Power: left vertical (stops above the angle slider) */
+  #power {
+    left: calc(8px + env(safe-area-inset-left)); width: 64px; top: 48px;
+    bottom: calc(66px + env(safe-area-inset-bottom));
+  }
+  #power .fill { left: 0; right: 0; bottom: 0; background: linear-gradient(rgba(255,160,40,0.5), rgba(255,80,40,0.35)); }
+  /* horizontal grip bar with 3 grip lines */
+  #power .knob {
+    left: 5px; right: 5px; height: 32px;
+    background-image: repeating-linear-gradient(#0003 0 2px, transparent 2px 6px), linear-gradient(#fff6c2, #ffe23b 45%, #e0a800);
+  }
+  #power .lab { top: 6px; left: 0; right: 0; text-align: center; }
+  #power .val { bottom: 6px; left: 0; right: 0; text-align: center; }
+
+  /* Angle: bottom horizontal (clears the power slider on the left) */
+  #angle {
+    left: calc(80px + env(safe-area-inset-left)); right: calc(132px + env(safe-area-inset-right));
+    bottom: calc(8px + env(safe-area-inset-bottom)); height: 56px;
+  }
+  #angle .fill { top: 0; bottom: 0; left: 0; background: linear-gradient(90deg, rgba(60,140,255,0.45), rgba(120,200,255,0.4)); }
+  /* vertical grip bar with 3 grip lines */
+  #angle .knob {
+    top: 5px; bottom: 5px; width: 32px;
+    background-image: repeating-linear-gradient(90deg, #0003 0 2px, transparent 2px 6px), linear-gradient(#fff6c2, #ffe23b 45%, #e0a800);
+  }
+  #angle .lab { top: 6px; left: 12px; }
+  #angle .val { top: 4px; right: 12px; }
+
+  /* Weapon strip: bottom-center, horizontal scroll */
+  #weps {
+    position: absolute;
+    left: calc(74px + env(safe-area-inset-left)); right: calc(132px + env(safe-area-inset-right));
+    bottom: calc(64px + env(safe-area-inset-bottom)); height: 44px;
+    display: flex; gap: 8px; overflow-x: auto; overflow-y: hidden;
+    touch-action: pan-x; -webkit-overflow-scrolling: touch; align-items: stretch;
+  }
+  #weps::-webkit-scrollbar { display: none; }
+  /* scroll indicator chevrons */
+  .wchev {
+    position: absolute; bottom: calc(64px + env(safe-area-inset-bottom)); height: 44px; width: 24px;
+    display: none; align-items: center; justify-content: center;
+    color: #ffe23b; font: bold 22px 'Courier New'; pointer-events: none; text-shadow: 0 0 4px #000;
+  }
+  .wchev.show { display: flex; }
+  #weps-l { left: calc(74px + env(safe-area-inset-left)); background: linear-gradient(90deg, rgba(14,14,24,0.92), transparent); }
+  #weps-r { right: calc(132px + env(safe-area-inset-right)); background: linear-gradient(270deg, rgba(14,14,24,0.92), transparent); }
+
+  /* Move buttons, above the FIRE button */
+  #move {
+    position: absolute; right: calc(8px + env(safe-area-inset-right)); bottom: 126px;
+    width: 108px; display: flex; gap: 8px;
+  }
+  .mbtn {
+    flex: 1; height: 46px; border-radius: 10px; font: bold 22px 'Courier New';
+    color: #9cf; background: linear-gradient(#2a2a40, #1a1a2a); border: 2px solid #556;
+    display: flex; align-items: center; justify-content: center; touch-action: none;
+    box-shadow: 0 3px 0 #0c0c16, inset 0 1px 2px rgba(255,255,255,0.15);
+  }
+  .mbtn:active { background: #9cf; color: #000; transform: translateY(2px); box-shadow: 0 1px 0 #0c0c16; }
+  .wchip {
+    flex: 0 0 auto; display: flex; align-items: center; padding: 0 14px;
+    background: linear-gradient(#2a2a40, #1a1a2a); color: #cdd; border: 2px solid #556;
+    border-radius: 10px; font: bold 14px 'Courier New'; white-space: nowrap;
+  }
+  .wchip.sel { background: #ffe23b; color: #000; border-color: #fff; }
+  .wchip.empty { opacity: 0.4; }
+
+  /* Round FIRE button, bottom-right */
+  #b-fire {
+    position: absolute; right: calc(8px + env(safe-area-inset-right)); bottom: 10px;
+    width: 108px; height: 108px; border-radius: 50%; padding: 0;
+    font: bold 24px 'Courier New'; letter-spacing: 1px; color: #fff;
+    display: flex; align-items: center; justify-content: center;
+    background: radial-gradient(circle at 36% 30%, #ff8b7b, #d62828 68%, #8b1a1a);
+    border: 3px solid #ffb3a7; touch-action: none;
+    text-shadow: 0 1px 2px rgba(0,0,0,0.6);
+    box-shadow: 0 6px 0 #6b0f0f, 0 9px 16px rgba(0,0,0,0.5), inset 0 3px 7px rgba(255,255,255,0.4);
+  }
+  #b-fire:active {
+    transform: translateY(5px);
+    background: radial-gradient(circle at 36% 30%, #ff6b5b, #b51d1d 68%, #6b0f0f);
+    box-shadow: 0 1px 0 #6b0f0f, 0 2px 6px rgba(0,0,0,0.5), inset 0 4px 10px rgba(0,0,0,0.45);
+  }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="c" width="1024" height="600"></canvas>
+  <div id="hint">← → angle · ↑ ↓ power · Tab weapon · Space fire</div>
+  <div id="touch">
+    <div id="power" class="slider">
+      <div class="fill"></div><div class="knob"></div>
+      <div class="lab">PWR</div><div class="val">0</div>
+    </div>
+    <div id="weps"></div>
+    <div id="weps-l" class="wchev">‹</div>
+    <div id="weps-r" class="wchev">›</div>
+    <div id="angle" class="slider">
+      <div class="fill"></div><div class="knob"></div>
+      <div class="lab">ANGLE</div><div class="val">45°</div>
+    </div>
+    <div id="move">
+      <button class="mbtn" id="b-mleft">«</button>
+      <button class="mbtn" id="b-mright">»</button>
+    </div>
+    <button id="b-fire">FIRE</button>
+  </div>
+</div>
+<script>
+"use strict";
+//================================================================
+// SCORCHED EARTH — Iteration 1 (playable core)
+//================================================================
+const W = 1024, H = 600;
+const cv = document.getElementById("c");
+const ctx = cv.getContext("2d");
+ctx.imageSmoothingEnabled = false;
+
+// ---- Config / constants ----------------------------------------
+// Power is 0-100. Range at 45deg ≈ (SPEED_SCALE*power)^2 / GRAVITY.
+// Tuned so power 100 ≈ 1400px, 80 ≈ 900px, 40 ≈ 230px across a 1024 field.
+const GRAVITY = 0.18;
+const SPEED_SCALE = 0.16;
+const WIND_ACCEL = 0.0002;        // per-frame vx nudge per unit of wind
+const MAX_POWER = 100;
+const DMG_SCALE = 0.4;            // lower = tanks survive more hits
+const PLAYER_COLORS = ["#ff3b3b","#3bff5b","#3b8bff","#ffe23b","#3bffe2","#ff3be2","#ff9b3b","#ffffff"];
+const PLAYER_NAMES  = ["Player 1","Player 2","Player 3","Player 4","Player 5","Player 6"];
+
+const WEAPONS = {
+  baby:   { name:"Baby Missile", radius:30,  dmg:1.0, unlimited:true },
+  missile:{ name:"Missile",      radius:50,  dmg:1.1, cost:1875,  bundle:5 },
+  babynuke:{name:"Baby Nuke",    radius:100, dmg:1.4, nuke:true, cost:10000, bundle:3 },
+  nuke:   { name:"Nuke",         radius:180, dmg:1.8, nuke:true, cost:12000, bundle:1 },
+  mirv:   { name:"MIRV",         radius:50,  dmg:1.1, mirv:5,    cost:10000, bundle:3 },
+  deathshead:{name:"Death's Head",radius:55, dmg:1.3, mirv:9,    cost:20000, bundle:1 },
+  funky:  { name:"Funky Bomb",   radius:55,  dmg:0.9, type:"funky", cost:7000, bundle:2 },
+  leapfrog:{name:"Leapfrog",     radius:42,  dmg:1.0, type:"leapfrog", hops:3, cost:10000, bundle:2 },
+  napalm: { name:"Napalm",       radius:36,  dmg:0.5, type:"napalm", cost:10000, bundle:10 },
+  roller: { name:"Roller",       radius:50,  dmg:1.1, type:"roller", cost:6000, bundle:5 },
+  hroller:{ name:"Heavy Roller", radius:90,  dmg:1.3, type:"roller", cost:6750, bundle:2 },
+  dirtball:{name:"Dirt Ball",    radius:70,  dmg:0,   type:"dirt", cost:5000, bundle:5 },
+  tondirt:{ name:"Ton of Dirt",  radius:130, dmg:0,   type:"dirt", cost:6750, bundle:2 },
+  digger: { name:"Digger",       radius:48,  dmg:1.0, type:"digger", cost:2500, bundle:5 },
+};
+// Buyable weapons (anything with a cost), in shop order.
+const SHOP = Object.keys(WEAPONS).filter(k=>WEAPONS[k].cost>0);
+// Economy: payouts + interest on cash held between rounds.
+const ECON = { kill:5000, dmgPerHp:10, survive:3000, lastTank:5000, interest:0.05 };
+// Fresh inventory: only the free, unlimited Baby Missile to start.
+const STARTING_INV = () => ({ baby:Infinity, missile:0, babynuke:0, nuke:0, mirv:0 });
+
+const QUIPS_ATTACK = ["Eat this!","Fire in the hole!","INCOMING!","Oops. Meant to do that.","This one's for you, pal.","You can't hide forever..."];
+const QUIPS_DEATH  = ["Aargh!","I'll be back!","You got lucky...","Direct hit... on me."];
+
+// ---- Game State -------------------------------------------------
+const G = {
+  screen: "MENU",
+  cfg: { players:2, mode:"vs cpu", rounds:5, wind:"med", terrain:"hilly" },
+  menuSel: 0,
+  round: 1,
+  tanks: [],
+  terrain: null,          // Float32Array height (y of surface) per x
+  wind: 0,                 // -200..200
+  windPhase: 0,
+  turn: 0,                 // index into alive order
+  active: -1,              // tank index whose turn
+  proj: [],                // active projectiles
+  napalm: [],              // burning napalm particles
+  explosions: [],          // visual explosions
+  speech: null,            // {tankIdx,text,until}
+  flash: 0,                // white screen flash 0..1
+  state: "AIM",            // AIM | FIRING | SETTLE | OVER
+  winner: -1,
+  msg: "",
+  buyer: -1,               // index of player currently shopping (BUYING screen)
+  buySel: 0,               // selected shop row
+};
+
+// ---- Sound (Web Audio) -----------------------------------------
+let AC = null;
+function ac(){ if(!AC) AC = new (window.AudioContext||window.webkitAudioContext)(); return AC; }
+function tone(f1,f2,dur,type,vol){
+  try{
+    const a=ac(), o=a.createOscillator(), g=a.createGain();
+    o.type=type||"sine"; o.connect(g); g.connect(a.destination);
+    o.frequency.setValueAtTime(f1,a.currentTime);
+    o.frequency.exponentialRampToValueAtTime(Math.max(1,f2),a.currentTime+dur);
+    g.gain.setValueAtTime(vol||0.3,a.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001,a.currentTime+dur);
+    o.start(); o.stop(a.currentTime+dur);
+  }catch(e){}
+}
+const snd = {
+  fire(){ tone(180,520,0.18,"square",0.25); },
+  boom(r){ tone(220,30,0.1+r/300,"sawtooth",0.45); },
+  death(){ tone(400,40,0.6,"sawtooth",0.4); },
+  win(){ tone(300,900,0.5,"square",0.3); },
+  click(){ tone(600,800,0.05,"sine",0.2); },
+};
+
+// ---- Terrain generation (midpoint displacement) ----------------
+function genTerrain(type){
+  const t = new Float32Array(W);
+  let rough, base;
+  if(type==="flat"){ rough=8; base=H*0.78; }
+  else if(type==="hilly"){ rough=40; base=H*0.62; }
+  else if(type==="mountain"){ rough=90; base=H*0.5; }
+  else { rough=20+Math.random()*70; base=H*(0.5+Math.random()*0.25); }
+
+  // midpoint displacement on a power-of-two grid then sample
+  const N = 1025; // 2^10+1
+  const h = new Float32Array(N);
+  h[0]=base+rnd(-rough,rough); h[N-1]=base+rnd(-rough,rough);
+  let step=N-1, scale=rough;
+  while(step>1){
+    const half=step>>1;
+    for(let i=half;i<N;i+=step){
+      const a=h[i-half], b=h[i+half<N? i+half : N-1];
+      h[i]=(a+b)/2 + rnd(-scale,scale);
+    }
+    step=half; scale*=0.55;
+  }
+  // sample + clamp + smooth
+  for(let x=0;x<W;x++){ t[x]=h[Math.floor(x/W*(N-1))]; }
+  for(let pass=0;pass<3;pass++){
+    for(let x=1;x<W-1;x++) t[x]=(t[x-1]+t[x]+t[x+1])/3;
+  }
+  for(let x=0;x<W;x++) t[x]=clamp(t[x], H*0.25, H-30);
+  return t;
+}
+function rnd(a,b){ return a+Math.random()*(b-a); }
+function clamp(v,lo,hi){ return v<lo?lo:v>hi?hi:v; }
+
+// ---- Tank -------------------------------------------------------
+// Tanks persist across rounds (so cash + inventory carry over).
+function createTanks(n){
+  G.tanks = [];
+  for(let i=0;i<n;i++){
+    G.tanks.push({
+      idx:i, name:PLAYER_NAMES[i], color:PLAYER_COLORS[i],
+      x:0, y:0, health:100, alive:true,
+      angle:45, power:40, weapon:"baby",
+      inv: STARTING_INV(), cash:0, cpu:false,
+      flashT:0, roundDamage:0, roundKills:0, lastEarn:0,
+    });
+  }
+}
+// Per-round reset: battle state only; keep cash + inventory.
+function resetForRound(){
+  const n=G.tanks.length;
+  for(let i=0;i<n;i++){
+    const t=G.tanks[i];
+    const x = Math.floor((i+0.5)/n * W + rnd(-40,40));
+    t.x = clamp(x,40,W-40);
+    t.health=100; t.alive=true; t.flashT=0;
+    t.angle=45; t.power=40; t.roundDamage=0; t.roundKills=0; t.lastEarn=0;
+    if(!(t.inv[t.weapon]>0) && !WEAPONS[t.weapon].unlimited) t.weapon="baby";
+    settleTank(t);
+  }
+}
+function settleTank(t){ t.y = G.terrain[clamp(Math.round(t.x),0,W-1)]; }
+
+function aliveTanks(){ return G.tanks.filter(t=>t.alive); }
+
+// ---- Wind -------------------------------------------------------
+function rollWind(){
+  const lvl = {none:0,low:60,med:130,high:200,random:Math.random()*200}[G.cfg.wind] ?? 130;
+  G.wind = G.cfg.wind==="none"?0:rnd(-lvl,lvl);
+}
+
+// ---- Round setup -----------------------------------------------
+// Enter a round: shop first (for players with cash), then battle.
+function enterRound(){
+  // CPU players shop automatically.
+  G.tanks.forEach(t=>{ if(t.cpu) cpuBuy(t); });
+  // First human with money opens the shop; otherwise straight to battle.
+  G.buyer = nextHumanBuyer(-1);
+  if(G.buyer>=0){ G.buySel=0; G.screen="BUYING"; }
+  else startBattle();
+}
+function nextHumanBuyer(after){
+  for(let i=after+1;i<G.tanks.length;i++){
+    const t=G.tanks[i];
+    if(!t.cpu && t.cash>=cheapestPrice()) return i;
+  }
+  return -1;
+}
+function cheapestPrice(){ return Math.min(...SHOP.map(k=>WEAPONS[k].cost)); }
+
+function startBattle(){
+  G.terrain = genTerrain(G.cfg.terrain);
+  resetForRound();
+  rollWind();
+  G.proj=[]; G.napalm=[]; G.explosions=[]; G.speech=null; G.flash=0;
+  G.active = Math.floor(Math.random()*G.tanks.length);
+  G.state="AIM"; G.winner=-1; G.msg="";
+  G.screen="BATTLE";
+  const at=G.tanks[G.active];
+  if(at && at.cpu) setTimeout(()=>cpuTurn(at),800);
+}
+
+// ---- Shop ------------------------------------------------------
+function buyItem(t, key){
+  const wp=WEAPONS[key]; if(!wp||!wp.cost) return false;
+  if(t.cash < wp.cost) return false;
+  t.cash -= wp.cost;
+  t.inv[key] = (t.inv[key]||0) + wp.bundle;
+  return true;
+}
+function cpuBuy(t){
+  // Spend roughly half the cash on random affordable weapons; keep a reserve.
+  let guard=0;
+  while(guard++<20){
+    const affordable = SHOP.filter(k=>WEAPONS[k].cost<=t.cash);
+    if(!affordable.length || t.cash < cheapestPrice()*1.5) break;
+    buyItem(t, pick(affordable));
+  }
+}
+
+// ---- Firing -----------------------------------------------------
+function fire(t){
+  const wp = WEAPONS[t.weapon];
+  if(!wp.unlimited){
+    if((t.inv[t.weapon]||0)<=0){ t.weapon="baby"; }
+  }
+  if(!wp.unlimited && t.inv[t.weapon]>0) t.inv[t.weapon]--;
+  const rad = t.angle*Math.PI/180;
+  const dir = 1; // barrel direction handled by angle sign? keep right/left via angle>90? we use 0-180
+  const speed = t.power*SPEED_SCALE;
+  // angle: 0 = pointing right horizontal, 90 = up, 180 = left horizontal
+  const vx = Math.cos(rad)*speed;
+  const vy = -Math.sin(rad)*speed;
+  const bx = t.x + Math.cos(rad)*16;
+  const by = t.y-10 - Math.sin(rad)*16;
+  G.proj.push(mkProj(bx,by,vx,vy,t.weapon,t.idx,wp));
+  snd.fire();
+  G.state="FIRING";
+}
+function mkProj(x,y,vx,vy,weap,owner,wp,opts){
+  return Object.assign({x,y,vx,vy,weap,owner,wp,trail:[],split:wp.mirv?false:true,dead:false}, opts||{});
+}
+
+// ---- Physics step ----------------------------------------------
+function tankHitAt(px,py,owner){
+  for(const t of G.tanks){
+    if(!t.alive||t.idx===owner) continue;
+    if(Math.abs(px-t.x)<12 && Math.abs(py-(t.y-6))<10) return t;
+  }
+  return null;
+}
+function stepProjectiles(dt){
+  const sub=2;
+  for(let s=0;s<sub;s++){
+    for(const p of G.proj){
+      if(p.dead) continue;
+
+      // --- Rolling mode (Rollers): crawl downhill along the surface ---
+      if(p.rolling){
+        const xi=Math.round(clamp(p.x,2,W-3));
+        const slope=G.terrain[xi+2]-G.terrain[xi-2];   // +ve => downhill to the right
+        const dir = slope>0.4?1 : slope<-0.4?-1 : 0;
+        if(dir===0){ resolveHit(p,p.x,G.terrain[xi]); continue; }   // reached a valley
+        p.x += dir*3*dt/sub;
+        p.y = G.terrain[clamp(Math.round(p.x),0,W-1)]-2;
+        const ht=tankHitAt(p.x,p.y,p.owner);
+        if(ht){ resolveHit(p,p.x,p.y); continue; }
+        if(p.x<3||p.x>W-3){ resolveHit(p,p.x,p.y); continue; }
+        pushTrail(p); continue;
+      }
+      // --- Digging mode (Digger): bore straight down, then explode ---
+      if(p.digging){
+        p.y += 4*dt/sub; p.digDepth += 4*dt/sub;
+        carveCircle(p.x, p.y, 13);
+        if(p.digDepth > p.wp.radius*1.5 || p.y>=H-1){ resolveHit(p,p.x,Math.min(p.y,H-1)); }
+        continue;
+      }
+
+      // --- Normal ballistic flight ---
+      p.vy += GRAVITY*dt/sub;
+      p.vx += G.wind*WIND_ACCEL*dt/sub;
+      p.x += p.vx*dt/sub;
+      p.y += p.vy*dt/sub;
+      // MIRV / Death's Head split at apogee
+      if(p.wp.mirv && !p.didSplit && p.vy>=0){
+        p.didSplit=true; p.dead=true;
+        for(let k=0;k<p.wp.mirv;k++){
+          const spread=(k-(p.wp.mirv-1)/2)*0.7;
+          G.proj.push(mkProj(p.x,p.y,p.vx+spread,p.vy-rnd(0.5,1.5),p.weap,p.owner,
+            {name:p.wp.name,radius:p.wp.radius,dmg:p.wp.dmg,nuke:p.wp.nuke}));
+        }
+        continue;
+      }
+      pushTrail(p);
+      // bounds
+      if(p.x<0||p.x>W){ p.dead=true; continue; }
+      if(p.y>=H){ resolveHit(p,p.x,H-1); continue; }
+      // tank hit (always explodes, even rollers/diggers in the air)
+      const ht=tankHitAt(p.x,p.y,p.owner);
+      if(ht){ resolveHit(p,p.x,p.y); continue; }
+      // terrain hit
+      if(p.y>=0){
+        const tx=Math.round(clamp(p.x,0,W-1));
+        if(p.y>=G.terrain[tx]){
+          if(p.wp.type==="roller"){ p.rolling=true; pushTrail(p); continue; }
+          if(p.wp.type==="digger"){ p.digging=true; p.digDepth=0; continue; }
+          resolveHit(p,p.x,p.y); continue;
+        }
+      }
+    }
+  }
+  G.proj = G.proj.filter(p=>!p.dead);
+}
+function pushTrail(p){ if(p.trail.length>30) p.trail.shift(); p.trail.push([p.x,p.y]); }
+
+// Dispatch a projectile's payload by weapon type.
+function resolveHit(p,x,y){
+  p.dead=true;
+  switch(p.wp.type){
+    case "dirt":     dropDirt(x,y,p.wp.radius); break;
+    case "napalm":   startNapalm(x,y,p.wp,p.owner); break;
+    case "funky":    funkyBurst(x,y,p.wp,p.owner); break;
+    case "leapfrog": leapDetonate(p,x,y); break;
+    default:         detonate(x,y,p.wp,p.owner);
+  }
+}
+
+// ---- Detonation: carve terrain + damage ------------------------
+function detonate(x,y,wp,owner){
+  const r=wp.radius;
+  snd.boom(r);
+  G.explosions.push({x,y,r,t:0,max:r});
+  if(wp.nuke){ G.flash=1; }
+  // carve terrain (circle)
+  carveCircle(x,y,r);
+  // damage tanks
+  for(const t of G.tanks){
+    if(!t.alive) continue;
+    const d=Math.hypot(t.x-x,(t.y-6)-y);
+    if(d<r){
+      const dmg=Math.max(0,(r-d)/r*100*wp.dmg*DMG_SCALE);
+      damageTank(t,dmg,owner);
+    }
+  }
+  // NOTE: don't switch to SETTLE here — other projectiles (e.g. MIRV warheads)
+  // may still be in flight. The FIRING→SETTLE transition happens in update()
+  // once every projectile has resolved.
+}
+function carveCircle(cx,cy,r){
+  const x0=Math.max(0,Math.floor(cx-r)), x1=Math.min(W-1,Math.ceil(cx+r));
+  for(let x=x0;x<=x1;x++){
+    const dx=x-cx; const inside=r*r-dx*dx;
+    if(inside<=0) continue;
+    const dy=Math.sqrt(inside);
+    const top=cy-dy, bot=cy+dy;
+    // raise surface (increase y value) where crater removes ground
+    if(bot>G.terrain[x] && top<G.terrain[x]){
+      G.terrain[x]=Math.min(H, bot);
+    } else if(top<=G.terrain[x] && bot>=G.terrain[x]){
+      G.terrain[x]=Math.min(H,bot);
+    }
+  }
+}
+
+// ---- Earth weapons: drop a dome of dirt (raises terrain) -------
+function dropDirt(cx,cy,r){
+  snd.boom(r*0.4);
+  G.explosions.push({x:cx,y:cy,r:r*0.6,t:0,max:r*0.6,dirt:true});
+  const x0=Math.max(0,Math.floor(cx-r)), x1=Math.min(W-1,Math.ceil(cx+r));
+  for(let x=x0;x<=x1;x++){
+    const dx=x-cx, inside=r*r-dx*dx;
+    if(inside<=0) continue;
+    const top=cy-Math.sqrt(inside);              // dome surface above impact
+    if(top<G.terrain[x]) G.terrain[x]=Math.max(H*0.05, top);
+  }
+}
+
+// ---- Napalm: spawn burning blobs that spread along the ground --
+function startNapalm(x,y,wp,owner){
+  snd.boom(wp.radius);
+  G.explosions.push({x,y,r:wp.radius*0.7,t:0,max:wp.radius*0.7});
+  for(let k=0;k<16;k++){
+    G.napalm.push({ x:x+rnd(-12,12), y:y-rnd(0,8),
+      vx:rnd(-2.2,2.2), vy:rnd(-1,0.5), life:rnd(1.0,1.6), owner, dmg:wp.dmg });
+  }
+}
+function updateNapalm(dt){
+  for(const n of G.napalm){
+    n.life-=dt*0.016;
+    n.vy+=GRAVITY*0.5*dt;
+    n.x+=n.vx*dt; n.y+=n.vy*dt;
+    const g=G.terrain[clamp(Math.round(n.x),0,W-1)];
+    if(n.y>=g){ n.y=g; n.vy=0; n.vx*=0.86; }     // stick & spread on surface
+    // burn nearby tanks
+    for(const t of G.tanks){
+      if(!t.alive) continue;
+      if(Math.hypot(t.x-n.x,(t.y-6)-n.y)<16) damageTank(t, n.dmg*1.1*dt, n.owner);
+    }
+  }
+  G.napalm=G.napalm.filter(n=>n.life>0 && n.x>-20 && n.x<W+20);
+}
+
+// ---- Funky Bomb: a scatter of small chained blasts -------------
+function funkyBurst(x,y,wp,owner){
+  for(let k=0;k<9;k++){
+    const ex=clamp(x+rnd(-wp.radius,wp.radius),0,W-1);
+    const ey=y+rnd(-wp.radius*0.4,wp.radius*0.3);
+    // stagger for a chain-reaction feel
+    setTimeout(()=>{ if(G.screen==="BATTLE"){ carveCircle(ex,ey,26);
+      G.explosions.push({x:ex,y:ey,r:30,t:0,max:30,funky:k%3});
+      snd.boom(30);
+      for(const t of G.tanks){ if(!t.alive) continue;
+        const d=Math.hypot(t.x-ex,(t.y-6)-ey);
+        if(d<32) damageTank(t,Math.max(0,(32-d)/32*100*wp.dmg*DMG_SCALE),owner);
+      }
+    }}, k*60);
+  }
+}
+
+// ---- Leapfrog: explode, then bounce forward and explode again --
+function leapDetonate(p,x,y){
+  detonate(x,y,p.wp,p.owner);
+  const hops = (p.hopsLeft!==undefined ? p.hopsLeft : p.wp.hops) - 1;
+  if(hops>0){
+    const dir = Math.sign(p.vx)||1;
+    const np = mkProj(x, G.terrain[clamp(Math.round(x),0,W-1)]-6, dir*5.5, -7, p.weap, p.owner, p.wp);
+    np.hopsLeft = hops;
+    G.proj.push(np);
+  }
+}
+function damageTank(t,dmg,owner){
+  const applied = Math.min(dmg, t.health);   // actual HP removed
+  t.health-=dmg; t.flashT=0.4;
+  // Credit the firer (no self-credit) for damage + kills.
+  const shooter = (owner>=0 && owner!==t.idx) ? G.tanks[owner] : null;
+  if(shooter) shooter.roundDamage += applied;
+  if(t.health<=0 && t.alive){
+    t.health=0; t.alive=false;
+    if(shooter) shooter.roundKills++;
+    G.explosions.push({x:t.x,y:t.y-6,r:40,t:0,max:40});
+    snd.death();
+    if(t.cpu) speak(t.idx, pick(QUIPS_DEATH));
+  }
+}
+
+// ---- After-settle: gravity on tanks, next turn ------------------
+function settleTanks(){
+  let moving=false;
+  for(const t of G.tanks){
+    if(!t.alive) continue;
+    const ground=G.terrain[clamp(Math.round(t.x),0,W-1)];
+    if(t.y < ground-1){
+      const fall=Math.min(6, ground-t.y);
+      t.y+=fall; moving=true;
+      if(ground-t.y<6 && fall>3){ /* land */ }
+    } else { t.y=ground; }
+  }
+  return moving;
+}
+
+// ---- Turn management -------------------------------------------
+function nextTurn(){
+  const alive=aliveTanks();
+  if(alive.length<=1){ endRound(alive[0]); return; }
+  let idx=G.active;
+  for(let i=0;i<G.tanks.length;i++){
+    idx=(idx+1)%G.tanks.length;
+    if(G.tanks[idx].alive){ G.active=idx; break; }
+  }
+  G.state="AIM";
+  const at=G.tanks[G.active];
+  if(at.cpu) setTimeout(()=>cpuTurn(at), 600);
+}
+function endRound(winnerTank){
+  G.winner = winnerTank?winnerTank.idx:-1;
+  // Compute each tank's earnings for the round.
+  for(const t of G.tanks){
+    let earn = t.roundKills*ECON.kill + Math.round(t.roundDamage)*ECON.dmgPerHp;
+    if(t.alive) earn += ECON.survive;
+    if(winnerTank && t.idx===winnerTank.idx) earn += ECON.lastTank;
+    t.lastEarn = earn;
+    t.cash += earn;
+  }
+  if(winnerTank) speak(winnerTank.idx, "Victory!");
+  G.state="OVER";
+  snd.win();
+  G.screen="SUMMARY";
+}
+
+// ---- Simple AI (Moron + Spoiler) -------------------------------
+function cpuTurn(t){
+  if(!t.alive||G.state!=="AIM") return;
+  speak(t.idx, pick(QUIPS_ATTACK));
+  const target = aliveTanks().filter(o=>o.idx!==t.idx)
+    .sort((a,b)=>Math.abs(a.x-t.x)-Math.abs(b.x-t.x))[0];
+  if(!target){ return; }
+  if(t.cpuLevel==="spoiler"){
+    aimSpoiler(t,target);
+  } else { // moron
+    t.angle = target.x<t.x ? rnd(110,160) : rnd(20,70);
+    t.power = rnd(30,70);
+  }
+  setTimeout(()=>{ if(G.state==="AIM") fire(t); }, 700);
+}
+function aimSpoiler(t,target){
+  // search angle/power that lands near target (accounts for wind/gravity by sim)
+  let best=null;
+  for(let tries=0;tries<120;tries++){
+    const ang = target.x<t.x ? rnd(95,175) : rnd(5,85);
+    const pow = rnd(15,95);
+    const land = simShot(t,ang,pow);
+    if(!land) continue;
+    const err=Math.hypot(land.x-target.x, land.y-(target.y-6));
+    if(!best||err<best.err){ best={ang,pow,err}; }
+    if(best.err<14) break;
+  }
+  if(best){
+    // Always-imperfect aim: a real challenge, but NOT an aimbot.
+    let ang = best.ang + rnd(-6,6);
+    let pow = best.pow + rnd(-7,7);
+    if(Math.random()<0.28){                 // occasional bigger blunder
+      ang += rnd(-14,14); pow += rnd(-14,14);
+    }
+    t.angle = clamp(ang,0,180);
+    t.power = clamp(pow,5,MAX_POWER);
+  }
+}
+function simShot(t,ang,pow){
+  const rad=ang*Math.PI/180, sp=pow*SPEED_SCALE;
+  let x=t.x+Math.cos(rad)*16, y=t.y-10-Math.sin(rad)*16;
+  let vx=Math.cos(rad)*sp, vy=-Math.sin(rad)*sp;
+  for(let i=0;i<2000;i++){
+    vy+=GRAVITY; vx+=G.wind*WIND_ACCEL;
+    x+=vx; y+=vy;
+    if(x<0||x>W||y>H) return {x:clamp(x,0,W),y:H};
+    if(y>=0 && y>=G.terrain[Math.round(clamp(x,0,W-1))]) return {x,y};
+  }
+  return null;
+}
+
+// ---- Speech bubbles --------------------------------------------
+function speak(idx,text){ G.speech={idx,text,until:performance.now()+2000}; }
+function pick(a){ return a[Math.floor(Math.random()*a.length)]; }
+
+//================================================================
+// RENDER
+//================================================================
+function draw(){
+  ctx.clearRect(0,0,W,H);
+  if(G.screen==="MENU"){ drawMenu(); return; }
+  if(G.screen==="BUYING"){ drawBuying(); return; }
+  if(G.screen==="GAMEOVER"){ drawGameOver(); return; }
+  drawSky();
+  drawTerrain();
+  drawTanks();
+  drawProjectiles();
+  drawNapalm();
+  drawExplosions();
+  drawSpeech();
+  drawHUD();
+  if(G.flash>0){
+    ctx.fillStyle=`rgba(255,255,255,${G.flash})`;
+    ctx.fillRect(0,0,W,H);
+  }
+  if(G.screen==="SUMMARY") drawSummary();
+}
+function drawSky(){
+  const g=ctx.createLinearGradient(0,0,0,H);
+  g.addColorStop(0,"#0a0a3a"); g.addColorStop(1,"#000010");
+  ctx.fillStyle=g; ctx.fillRect(0,0,W,H);
+}
+function drawTerrain(){
+  ctx.beginPath();
+  ctx.moveTo(0,H);
+  for(let x=0;x<W;x++) ctx.lineTo(x,G.terrain[x]);
+  ctx.lineTo(W,H); ctx.closePath();
+  ctx.fillStyle="#6B4226"; ctx.fill();
+  // top edge
+  ctx.beginPath();
+  ctx.moveTo(0,G.terrain[0]);
+  for(let x=1;x<W;x++) ctx.lineTo(x,G.terrain[x]);
+  ctx.strokeStyle="#8B7355"; ctx.lineWidth=2; ctx.stroke();
+}
+function drawTanks(){
+  for(const t of G.tanks){
+    if(!t.alive) continue;
+    const blink = (t.idx===G.active && Math.floor(performance.now()/250)%2===0);
+    const col = t.flashT>0 ? "#fff" : t.color;
+    ctx.save();
+    ctx.translate(t.x, t.y);
+    // body
+    ctx.fillStyle=col;
+    ctx.fillRect(-10,-6,20,6);
+    ctx.fillRect(-7,-9,14,4);
+    // barrel
+    const rad=t.angle*Math.PI/180;
+    ctx.strokeStyle=col; ctx.lineWidth=3;
+    ctx.beginPath(); ctx.moveTo(0,-7);
+    ctx.lineTo(Math.cos(rad)*16, -7-Math.sin(rad)*16); ctx.stroke();
+    // health bar
+    ctx.fillStyle="#400"; ctx.fillRect(-10,-16,20,3);
+    ctx.fillStyle = t.health>50?"#3f3":t.health>25?"#ff3":"#f33";
+    ctx.fillRect(-10,-16,20*t.health/100,3);
+    if(blink){ ctx.strokeStyle="#fff"; ctx.lineWidth=1; ctx.strokeRect(-12,-12,24,14); }
+    ctx.restore();
+  }
+}
+function drawProjectiles(){
+  for(const p of G.proj){
+    ctx.strokeStyle="rgba(255,255,150,0.4)"; ctx.lineWidth=1;
+    ctx.beginPath();
+    for(let i=0;i<p.trail.length;i++){ const[tx,ty]=p.trail[i]; i?ctx.lineTo(tx,ty):ctx.moveTo(tx,ty); }
+    ctx.stroke();
+    ctx.fillStyle="#fff"; ctx.fillRect(p.x-2,p.y-2,4,4);
+  }
+}
+function drawExplosions(){
+  for(const e of G.explosions){
+    const f=e.t/0.5; const rr=e.max*Math.min(1,f*1.5);
+    const a=1-f;
+    const grad=ctx.createRadialGradient(e.x,e.y,0,e.x,e.y,Math.max(1,rr));
+    if(e.dirt){
+      grad.addColorStop(0,`rgba(180,130,80,${a})`);
+      grad.addColorStop(0.6,`rgba(110,66,38,${a})`);
+      grad.addColorStop(1,`rgba(80,50,30,0)`);
+    } else if(e.funky!==undefined){
+      const c=[["255,90,200"],["120,255,140"],["120,200,255"]][e.funky];
+      grad.addColorStop(0,`rgba(255,255,255,${a})`);
+      grad.addColorStop(0.5,`rgba(${c},${a})`);
+      grad.addColorStop(1,`rgba(${c},0)`);
+    } else {
+      grad.addColorStop(0,`rgba(255,255,200,${a})`);
+      grad.addColorStop(0.5,`rgba(255,140,0,${a})`);
+      grad.addColorStop(1,`rgba(255,0,0,0)`);
+    }
+    ctx.fillStyle=grad;
+    ctx.beginPath(); ctx.arc(e.x,e.y,Math.max(1,rr),0,7); ctx.fill();
+  }
+}
+function drawNapalm(){
+  for(const n of G.napalm){
+    const a=clamp(n.life,0,1);
+    ctx.fillStyle=`rgba(255,${100+Math.floor(rnd(0,120))},0,${0.5+a*0.5})`;
+    const s=4+rnd(0,4);
+    ctx.fillRect(n.x-s/2, n.y-s, s, s);
+  }
+}
+function drawSpeech(){
+  if(!G.speech||performance.now()>G.speech.until) return;
+  const t=G.tanks[G.speech.idx]; if(!t||!t.alive) return;
+  ctx.font="13px 'Courier New'";
+  const tw=ctx.measureText(G.speech.text).width+14;
+  const bx=clamp(t.x-tw/2,4,W-tw-4), by=t.y-50;
+  ctx.fillStyle="#fff"; ctx.fillRect(bx,by,tw,22);
+  ctx.fillStyle="#000"; ctx.fillRect(bx+1,by+1,tw-2,20);
+  ctx.fillStyle="#fff"; ctx.fillText(G.speech.text,bx+7,by+15);
+}
+function drawHUD(){
+  const t=G.tanks[G.active]; if(!t) return;
+  ctx.fillStyle="#111"; ctx.fillRect(0,0,W,40);
+  ctx.fillStyle=t.color; ctx.globalAlpha=0.25; ctx.fillRect(0,0,W,40); ctx.globalAlpha=1;
+  ctx.fillStyle="#fff"; ctx.font="bold 16px 'Courier New'";
+  ctx.textBaseline="middle";
+  ctx.fillText(`Power: ${Math.round(t.power)}`, 12, 14);
+  ctx.fillText(`Angle: ${Math.round(t.angle)}°`, 160, 14);
+  ctx.fillStyle=t.color; ctx.fillText(t.name.toUpperCase(), 320, 14);
+  const wp=WEAPONS[t.weapon];
+  const cnt = wp.unlimited?"∞":(t.inv[t.weapon]||0);
+  ctx.fillStyle="#fff"; ctx.fillText(`${wp.name}  ×${cnt}`, W-260, 14);
+  // wind
+  ctx.fillText(`Wind:`, W-260, 30);
+  const dir=G.wind>=0?"→":"←";
+  ctx.fillStyle="#9cf"; ctx.fillText(`${dir} ${Math.abs(Math.round(G.wind))}`, W-200, 30);
+  ctx.fillStyle="#aaa"; ctx.font="12px 'Courier New'";
+  ctx.fillText(`Round ${G.round}/${G.cfg.rounds}`, 12, 30);
+  ctx.fillText(`HP ${Math.round(t.health)}  $${t.cash}`, 160, 30);
+  ctx.textBaseline="alphabetic";
+}
+
+// ---- Menu -------------------------------------------------------
+const MENU_ITEMS = [
+  {key:"mode",    label:"Mode",    opts:["vs cpu","2 player"]},
+  {key:"rounds",  label:"Rounds",  opts:[1,3,5,10]},
+  {key:"wind",    label:"Wind",    opts:["none","low","med","high","random"]},
+  {key:"terrain", label:"Terrain", opts:["flat","hilly","mountain","random"]},
+  {key:"start",   label:"▶ START GAME"},
+];
+const MENU_Y0 = 248, MENU_DY = 62, MENU_ROWH = 50;
+function drawMenu(){
+  drawSky();
+  ctx.textAlign="center";
+  ctx.fillStyle="#ffe23b"; ctx.font="bold 60px 'Courier New'";
+  ctx.fillText("SCORCHED EARTH", W/2, 115);
+  ctx.fillStyle="#9cf"; ctx.font="20px 'Courier New'";
+  ctx.fillText("The Mother of All Games", W/2, 150);
+  MENU_ITEMS.forEach((m,i)=>{
+    const y=MENU_Y0+i*MENU_DY;
+    const sel=i===G.menuSel;
+    if(sel){
+      ctx.fillStyle="rgba(255,226,59,0.12)";
+      ctx.fillRect(W/2-300, y-MENU_ROWH+10, 600, MENU_ROWH);
+    }
+    ctx.fillStyle=sel?"#ffe23b":"#9a9a9a";
+    if(m.key==="start"){
+      ctx.font="bold 38px 'Courier New'";
+      ctx.fillText(sel?"▶  START GAME  ◀":"START GAME", W/2, y);
+    }else{
+      ctx.font="bold 32px 'Courier New'";
+      const val=String(G.cfg[m.key]).toUpperCase();
+      ctx.fillText(`${m.label}:   ‹ ${val} ›`, W/2, y);
+    }
+  });
+  ctx.fillStyle="#666"; ctx.font="15px 'Courier New'";
+  const sub = G.cfg.mode==="2 player" ? "Two humans, hot-seat" : "You (red) vs CPU Spoiler (green)";
+  ctx.fillText(sub, W/2, 540);
+  ctx.fillStyle="#555"; ctx.font="14px 'Courier New'";
+  ctx.fillText("Tap an option to change it · tap START to play", W/2, 568);
+  ctx.textAlign="left";
+}
+
+// ---- Summary ----------------------------------------------------
+function money(n){ return "$"+n.toLocaleString("en-US"); }
+
+function drawSummary(){
+  drawSky();
+  ctx.fillStyle="rgba(0,0,0,0.78)"; ctx.fillRect(0,0,W,H);
+  ctx.textAlign="center";
+  const wt = G.winner>=0?G.tanks[G.winner]:null;
+  ctx.fillStyle="#ffe23b"; ctx.font="bold 38px 'Courier New'";
+  ctx.fillText(wt?`${wt.name.toUpperCase()} WINS ROUND ${G.round}!`:`ROUND ${G.round} — DRAW`, W/2, 90);
+  // column headers
+  ctx.font="bold 16px 'Courier New'"; ctx.fillStyle="#9cf";
+  const cols=[["PLAYER",W/2-360],["KILLS",W/2-60],["DMG",W/2+40],["EARNED",W/2+170],["CASH",W/2+340]];
+  ctx.textAlign="left";
+  for(const[h,x] of cols) ctx.fillText(h, x, 150);
+  ctx.font="18px 'Courier New'";
+  G.tanks.forEach((t,i)=>{
+    const y=190+i*40;
+    ctx.fillStyle=t.color; ctx.fillText(t.name+(t.alive?"":" †"), W/2-360, y);
+    ctx.fillStyle="#ddd";
+    ctx.fillText(String(t.roundKills), W/2-60, y);
+    ctx.fillText(String(Math.round(t.roundDamage)), W/2+40, y);
+    ctx.fillStyle="#7f7"; ctx.fillText("+"+money(t.lastEarn), W/2+170, y);
+    ctx.fillStyle="#ffe23b"; ctx.fillText(money(t.cash), W/2+340, y);
+  });
+  ctx.textAlign="center"; ctx.fillStyle="#888"; ctx.font="14px 'Courier New'";
+  ctx.fillText(`Kill ${money(ECON.kill)} · Damage ${money(ECON.dmgPerHp)}/hp · Survive ${money(ECON.survive)} · Last tank ${money(ECON.lastTank)}`, W/2, 470);
+  ctx.fillStyle="#9cf"; ctx.font="bold 20px 'Courier New'";
+  const last = G.round>=G.cfg.rounds;
+  ctx.fillText(last?"Tap / Enter for FINAL RESULTS":`Tap / Enter — shop & round ${G.round+1}  (+${Math.round(ECON.interest*100)}% interest)`, W/2, 520);
+  ctx.textAlign="left";
+}
+
+// ---- Shop screen (two columns) ----------------------------------
+const BUY_Y0=148, BUY_DY=44, BUY_ROWH=40, BUY_COLW=452;
+const BUY_ROWS = Math.ceil(SHOP.length/2);
+const BUY_COLX = [W/2-470, W/2+18];
+function buyRowRect(i){
+  const col=Math.floor(i/BUY_ROWS), row=i%BUY_ROWS;
+  return { x:BUY_COLX[col], y:BUY_Y0+row*BUY_DY, w:BUY_COLW };
+}
+const BUY_DONE_Y = BUY_Y0 + BUY_ROWS*BUY_DY + 30;
+function drawBuying(){
+  drawSky();
+  ctx.fillStyle="rgba(0,0,0,0.82)"; ctx.fillRect(0,0,W,H);
+  const t=G.tanks[G.buyer]; if(!t){ return; }
+  ctx.textAlign="center";
+  ctx.fillStyle=t.color; ctx.font="bold 32px 'Courier New'";
+  ctx.fillText(`${t.name.toUpperCase()} — ARMORY`, W/2, 62);
+  ctx.fillStyle="#ffe23b"; ctx.font="bold 24px 'Courier New'";
+  ctx.fillText(`Cash: ${money(t.cash)}`, W/2, 100);
+  // shop rows
+  SHOP.forEach((key,i)=>{
+    const wp=WEAPONS[key], R=buyRowRect(i);
+    const sel=i===G.buySel, afford=t.cash>=wp.cost;
+    if(sel){ ctx.fillStyle="rgba(255,226,59,0.13)"; ctx.fillRect(R.x-8,R.y-BUY_ROWH+12,R.w,BUY_ROWH); }
+    ctx.textAlign="left"; ctx.font="bold 19px 'Courier New'";
+    ctx.fillStyle = afford?(sel?"#ffe23b":"#ddd"):"#666";
+    ctx.fillText(`${wp.name}  (${t.inv[key]||0})`, R.x, R.y);
+    ctx.textAlign="right";
+    ctx.fillStyle = afford?"#7cf":"#555";
+    ctx.fillText(`${money(wp.cost)}/${wp.bundle}`, R.x+R.w-12, R.y);
+  });
+  // DONE button
+  ctx.textAlign="center";
+  ctx.fillStyle=G.buySel===SHOP.length?"#ffe23b":"#9cf"; ctx.font="bold 28px 'Courier New'";
+  ctx.fillText(G.buySel===SHOP.length?"▶ DONE ◀":"DONE", W/2, BUY_DONE_Y);
+  ctx.fillStyle="#888"; ctx.font="13px 'Courier New'";
+  ctx.fillText("Tap a weapon to buy · tap DONE when finished", W/2, BUY_DONE_Y+28);
+  ctx.textAlign="left";
+}
+function drawGameOver(){
+  drawSky();
+  ctx.fillStyle="rgba(0,0,0,0.82)"; ctx.fillRect(0,0,W,H);
+  ctx.textAlign="center";
+  // overall winner = most cash
+  const ranked=[...G.tanks].sort((a,b)=>b.cash-a.cash);
+  const champ=ranked[0];
+  ctx.fillStyle="#ffe23b"; ctx.font="bold 48px 'Courier New'";
+  ctx.fillText("GAME OVER", W/2, 110);
+  ctx.fillStyle=champ.color; ctx.font="bold 34px 'Courier New'";
+  ctx.fillText(`${champ.name.toUpperCase()} WINS!`, W/2, 165);
+  ctx.font="22px 'Courier New'";
+  ranked.forEach((t,i)=>{
+    ctx.fillStyle=t.color;
+    ctx.fillText(`${i+1}.  ${t.name}   ${money(t.cash)}`, W/2, 235+i*40);
+  });
+  ctx.fillStyle="#9cf"; ctx.font="bold 20px 'Courier New'";
+  ctx.fillText("Tap / Enter to return to menu", W/2, 540);
+  ctx.textAlign="left";
+}
+
+//================================================================
+// INPUT
+//================================================================
+const keys={};
+addEventListener("keydown",e=>{
+  if(["ArrowUp","ArrowDown","ArrowLeft","ArrowRight","Tab"," "].includes(e.key)) e.preventDefault();
+  keys[e.key]=true;
+  ac(); // unlock audio on first key
+  if(G.screen==="MENU") menuKey(e);
+  else if(G.screen==="BATTLE") battleKey(e);
+  else if(G.screen==="SUMMARY") summaryKey(e);
+  else if(G.screen==="BUYING") buyingKey(e);
+  else if(G.screen==="GAMEOVER" && e.key==="Enter"){ G.screen="MENU"; G.menuSel=0; }
+});
+addEventListener("keyup",e=>{ keys[e.key]=false; });
+
+// ---- Shop input -------------------------------------------------
+function buyDone(){
+  G.buyer = nextHumanBuyer(G.buyer);
+  if(G.buyer>=0){ G.buySel=0; }
+  else startBattle();
+}
+function buyingKey(e){
+  const n=SHOP.length, rows=n+1;       // +1 for DONE
+  if(e.key==="ArrowDown"){ G.buySel=(G.buySel+1)%rows; snd.click(); }
+  else if(e.key==="ArrowUp"){ G.buySel=(G.buySel+rows-1)%rows; snd.click(); }
+  else if(e.key==="ArrowRight"){ if(G.buySel<n) G.buySel=Math.min(n-1,G.buySel+BUY_ROWS); snd.click(); }
+  else if(e.key==="ArrowLeft"){ if(G.buySel<n) G.buySel=Math.max(0,G.buySel-BUY_ROWS); snd.click(); }
+  else if(e.key==="Enter"||e.key===" "){
+    if(G.buySel===n){ buyDone(); }
+    else {
+      const t=G.tanks[G.buyer];
+      if(buyItem(t, SHOP[G.buySel])) snd.click(); else snd.boom(20);
+    }
+  }
+}
+function buyingTap(cx, cy){
+  const t=G.tanks[G.buyer]; if(!t) return;
+  for(let i=0;i<SHOP.length;i++){
+    const R=buyRowRect(i);
+    if(cx>=R.x-8 && cx<=R.x+R.w && cy>=R.y-BUY_ROWH+12 && cy<=R.y+12){
+      G.buySel=i;
+      if(buyItem(t, SHOP[i])) snd.click(); else snd.boom(20);
+      return;
+    }
+  }
+  if(cy>=BUY_DONE_Y-30 && cy<=BUY_DONE_Y+12){ G.buySel=SHOP.length; buyDone(); }
+}
+
+// ---- Touch / on-screen controls --------------------------------
+function dispatchKey(k){
+  ac();
+  const e={key:k, preventDefault(){}};
+  if(G.screen==="MENU") menuKey(e);
+  else if(G.screen==="BATTLE") battleKey(e);
+  else if(G.screen==="SUMMARY") summaryKey(e);
+}
+function bindBtn(id,k){
+  const el=document.getElementById(id); if(!el) return;
+  const down=ev=>{ ev.preventDefault(); keys[k]=true; dispatchKey(k); };
+  const up=ev=>{ ev.preventDefault(); keys[k]=false; };
+  el.addEventListener("touchstart",down,{passive:false});
+  el.addEventListener("touchend",up,{passive:false});
+  el.addEventListener("touchcancel",up,{passive:false});
+  el.addEventListener("mousedown",down);
+  el.addEventListener("mouseup",up);
+  el.addEventListener("mouseleave",up);
+}
+// PWR▲/▼ = power (ArrowUp/Down) which also = menu up/down (select)
+// ◀ ▶    = angle (ArrowLeft/Right) which also = menu left/right (change value)
+// FIRE/OK = Enter (fires in battle, confirms in menu/summary)
+// ---- Slider + weapon-strip touch controls ----------------------
+const elPower = document.getElementById("power");
+const elAngle = document.getElementById("angle");
+const elWeps  = document.getElementById("weps");
+const elWepsL = document.getElementById("weps-l");
+const elWepsR = document.getElementById("weps-r");
+const elFire  = document.getElementById("b-fire");
+// The active tank, only when a human may act this turn.
+function activeTank(){
+  const t = G.tanks[G.active];
+  return (G.screen==="BATTLE" && t && !t.cpu) ? t : null;
+}
+function canAim(){ const t=activeTank(); return (t && G.state==="AIM") ? t : null; }
+
+// Relative drag: grab anywhere, then the value follows how far you move the
+// grip along the track (no jump-to-finger). Full track sweep = full range.
+let dragKind = null, dragStartPos = 0, dragStartLen = 1, dragStartVal = 0;
+function axisPos(el, cx, cy, vertical){
+  const r = el.getBoundingClientRect();
+  return vertical ? { p:r.bottom-cy, len:r.height } : { p:cx-r.left, len:r.width };
+}
+function startDrag(kind, ev){
+  const t = canAim(); if(!t){ dragKind=null; return; }
+  ac(); dragKind=kind; const p=ptOf(ev);
+  if(kind==="power"){ const a=axisPos(elPower,p.x,p.y,true);  dragStartPos=a.p; dragStartLen=a.len; dragStartVal=t.power; elPower.classList.add("grab"); }
+  else            { const a=axisPos(elAngle,p.x,p.y,false);  dragStartPos=a.p; dragStartLen=a.len; dragStartVal=t.angle; elAngle.classList.add("grab"); }
+}
+function applyDrag(cx, cy){
+  const t = canAim(); if(!t) return;
+  if(dragKind==="power"){
+    const a=axisPos(elPower,cx,cy,true);
+    const dv=(a.p-dragStartPos)/a.len*MAX_POWER;        // up = more
+    t.power = clamp(Math.round(dragStartVal+dv),0,MAX_POWER);
+  } else if(dragKind==="angle"){
+    const a=axisPos(elAngle,cx,cy,false);
+    const dv=(a.p-dragStartPos)/a.len*180;              // right = lower angle
+    t.angle = clamp(Math.round(dragStartVal-dv),0,180);
+  }
+}
+function endDrag(){ dragKind=null; elPower.classList.remove("grab"); elAngle.classList.remove("grab"); }
+function ptOf(ev){ const t=ev.touches&&ev.touches[0]?ev.touches[0]:ev; return {x:t.clientX,y:t.clientY}; }
+elPower.addEventListener("touchstart",e=>{e.preventDefault();startDrag("power",e);},{passive:false});
+elAngle.addEventListener("touchstart",e=>{e.preventDefault();startDrag("angle",e);},{passive:false});
+elPower.addEventListener("mousedown",e=>{e.preventDefault();startDrag("power",e);});
+elAngle.addEventListener("mousedown",e=>{e.preventDefault();startDrag("angle",e);});
+addEventListener("touchmove",e=>{ if(dragKind){ e.preventDefault(); const p=ptOf(e); applyDrag(p.x,p.y); } },{passive:false});
+addEventListener("mousemove",e=>{ if(dragKind){ applyDrag(e.clientX,e.clientY); } });
+addEventListener("touchend",endDrag);
+addEventListener("mouseup",endDrag);
+
+// Fire button
+function fireActive(){ const t=canAim(); if(t) fire(t); }
+elFire.addEventListener("touchstart",e=>{ e.preventDefault(); ac(); fireActive(); },{passive:false});
+elFire.addEventListener("mousedown",e=>{ e.preventDefault(); ac(); fireActive(); });
+
+// Move buttons: hold to drive the tank along the terrain.
+let moveHeld = 0;                 // -1 left, +1 right, 0 none
+function bindMove(id, dir){
+  const el=document.getElementById(id); if(!el) return;
+  const dn=e=>{ e.preventDefault(); ac(); moveHeld=dir; };
+  const up=e=>{ e.preventDefault(); if(moveHeld===dir) moveHeld=0; };
+  el.addEventListener("touchstart",dn,{passive:false});
+  el.addEventListener("touchend",up,{passive:false});
+  el.addEventListener("touchcancel",up,{passive:false});
+  el.addEventListener("mousedown",dn);
+  el.addEventListener("mouseup",up);
+  el.addEventListener("mouseleave",up);
+}
+bindMove("b-mleft",-1);
+bindMove("b-mright",1);
+function moveActiveTank(dt){
+  const t=canAim(); if(!t) return;
+  let dir=moveHeld;
+  if(keys["a"]||keys["A"]) dir=-1;
+  if(keys["d"]||keys["D"]) dir=1;
+  if(!dir) return;
+  t.x = clamp(t.x + dir*2.2*dt, 16, W-16);
+  t.y = G.terrain[clamp(Math.round(t.x),0,W-1)];
+}
+
+// Weapon strip: rebuild for a given tank, tap a chip to select.
+let wepStripFor = -1;
+function buildWeaponStrip(t){
+  elWeps.innerHTML = "";
+  if(!t) return;
+  for(const key of Object.keys(WEAPONS)){
+    const wp = WEAPONS[key];
+    const cnt = wp.unlimited ? Infinity : (t.inv[key]||0);
+    if(cnt<=0 && !wp.unlimited) continue;          // only show owned weapons
+    const chip = document.createElement("div");
+    chip.className = "wchip" + (key===t.weapon?" sel":"");
+    chip.dataset.weap = key;
+    chip.textContent = wp.name + (wp.unlimited?"  ∞":"  ×"+cnt);
+    chip.addEventListener("click", ()=>{
+      const at=canAim(); if(!at) return;
+      at.weapon = key; snd.click(); refreshWeaponStrip(at, true);
+    });
+    elWeps.appendChild(chip);
+  }
+  wepStripFor = t.idx;
+}
+function refreshWeaponStrip(t, rebuild){
+  if(!t){ elWeps.innerHTML=""; wepStripFor=-1; return; }
+  if(rebuild || wepStripFor!==t.idx){ buildWeaponStrip(t); return; }
+  // just update selection + counts
+  for(const chip of elWeps.children){
+    const key = chip.dataset.weap, wp = WEAPONS[key];
+    chip.classList.toggle("sel", key===t.weapon);
+    chip.textContent = wp.name + (wp.unlimited?"  ∞":"  ×"+(t.inv[key]||0));
+  }
+}
+
+// Per-frame: reflect active tank's values on the sliders, show/hide controls.
+function syncTouchUI(){
+  if(!IS_TOUCH) return;
+  const human = activeTank();
+  document.body.classList.toggle("battle", !!human);
+  if(!human){ return; }
+  const pf = clamp(human.power/MAX_POWER,0,1);
+  elPower.querySelector(".fill").style.height = (pf*100)+"%";
+  elPower.querySelector(".knob").style.bottom = "calc("+(pf*100)+"% - 16px)";
+  elPower.querySelector(".val").textContent = Math.round(human.power);
+  const af = clamp(1-human.angle/180,0,1);
+  elAngle.querySelector(".fill").style.width = (af*100)+"%";
+  elAngle.querySelector(".knob").style.left = "calc("+(af*100)+"% - 16px)";
+  elAngle.querySelector(".val").textContent = Math.round(human.angle)+"°";
+  refreshWeaponStrip(human, false);
+  // scroll-indicator chevrons
+  const sl = elWeps.scrollLeft, maxS = elWeps.scrollWidth - elWeps.clientWidth;
+  elWepsL.classList.toggle("show", sl > 2);
+  elWepsR.classList.toggle("show", sl < maxS - 2);
+}
+// reveal touch UI on touch-capable devices
+const IS_TOUCH = ("ontouchstart" in window) || navigator.maxTouchPoints>0;
+if(IS_TOUCH){ document.body.classList.add("touch"); }
+
+// ---- Map a screen tap to internal canvas (1024x600) coords ------
+function screenToCanvas(clientX, clientY){
+  const portrait = window.matchMedia("(orientation: portrait)").matches;
+  if(portrait){
+    // #wrap is rotated -90deg about its top-left at (0, screenH).
+    // Invert the rotation, then undo object-fit letterboxing.
+    const sw=window.innerWidth, sh=window.innerHeight;
+    const lx = sh - clientY;     // local element x
+    const ly = clientX;          // local element y
+    const scale = Math.min(sh/W, sw/H);
+    return { x:(lx-(sh-W*scale)/2)/scale, y:(ly-(sw-H*scale)/2)/scale };
+  }
+  const r = cv.getBoundingClientRect();
+  const scale = Math.min(r.width/W, r.height/H);   // object-fit: contain
+  const ox = r.left + (r.width  - W*scale)/2;
+  const oy = r.top  + (r.height - H*scale)/2;
+  return { x:(clientX-ox)/scale, y:(clientY-oy)/scale };
+}
+function onTap(clientX, clientY){
+  ac();
+  const p = screenToCanvas(clientX, clientY);
+  if(G.screen==="MENU") menuTap(p.x, p.y);
+  else if(G.screen==="SUMMARY") summaryKey({key:"Enter"});
+  else if(G.screen==="BUYING") buyingTap(p.x, p.y);
+  else if(G.screen==="GAMEOVER"){ G.screen="MENU"; G.menuSel=0; }
+}
+function menuTap(cx, cy){
+  for(let i=0;i<MENU_ITEMS.length;i++){
+    const y = MENU_Y0 + i*MENU_DY;
+    if(cy < y-MENU_ROWH+6 || cy > y+14) continue;
+    const m = MENU_ITEMS[i];
+    G.menuSel = i; snd.click();
+    if(m.key==="start"){ beginGame(); }
+    else if(m.opts){
+      const dir = cx < W/2 ? -1 : 1;        // left half = prev, right half = next
+      const cur = m.opts.indexOf(G.cfg[m.key]);
+      G.cfg[m.key] = m.opts[(cur+dir+m.opts.length)%m.opts.length];
+    }
+    return;
+  }
+}
+cv.addEventListener("click", e=> onTap(e.clientX, e.clientY));
+cv.addEventListener("touchstart", e=>{
+  if(e.touches.length){ e.preventDefault(); onTap(e.touches[0].clientX, e.touches[0].clientY); }
+}, {passive:false});
+
+// Go fullscreen + lock landscape (hides the browser address bar).
+// Must be triggered by a user gesture (we call it from START).
+function goFullscreen(){
+  if(!IS_TOUCH) return;
+  const el = document.documentElement;
+  const req = el.requestFullscreen || el.webkitRequestFullscreen || el.mozRequestFullScreen;
+  try{
+    if(req && !document.fullscreenElement){
+      const p = req.call(el);
+      if(p && p.then){ p.then(lockLandscape).catch(()=>{}); }
+      else lockLandscape();
+    } else { lockLandscape(); }
+  }catch(e){}
+}
+function lockLandscape(){
+  try{
+    if(screen.orientation && screen.orientation.lock){
+      screen.orientation.lock("landscape").catch(()=>{});
+    }
+  }catch(e){}
+}
+// Hide the URL bar ASAP: attempt fullscreen on the very first interaction.
+if(IS_TOUCH){
+  const kick = ()=>{ goFullscreen(); window.removeEventListener("touchend",kick); window.removeEventListener("pointerup",kick); };
+  window.addEventListener("touchend", kick, {passive:true});
+  window.addEventListener("pointerup", kick, {passive:true});
+}
+
+function menuKey(e){
+  const m=MENU_ITEMS[G.menuSel];
+  if(e.key==="ArrowUp"){ G.menuSel=(G.menuSel+MENU_ITEMS.length-1)%MENU_ITEMS.length; snd.click(); }
+  else if(e.key==="ArrowDown"){ G.menuSel=(G.menuSel+1)%MENU_ITEMS.length; snd.click(); }
+  else if((e.key==="ArrowLeft"||e.key==="ArrowRight") && m.opts){
+    const cur=m.opts.indexOf(G.cfg[m.key]); const d=e.key==="ArrowRight"?1:-1;
+    G.cfg[m.key]=m.opts[(cur+d+m.opts.length)%m.opts.length]; snd.click();
+  }
+  else if(e.key==="Enter"){
+    if(m.key==="start"){ beginGame(); }
+  }
+}
+function assignRoles(){
+  // 2-player hot-seat: both human. vs cpu: player 2 is CPU Spoiler.
+  G.tanks.forEach((t,i)=>{
+    t.cpu = (G.cfg.mode==="vs cpu" && i===1);
+    if(t.cpu) t.cpuLevel="spoiler";
+  });
+}
+function beginGame(){
+  goFullscreen();
+  G.round=1;
+  createTanks(G.cfg.players);
+  assignRoles();
+  enterRound();                 // round 1: $0, so straight to battle
+}
+function battleKey(e){
+  if(G.state!=="AIM") return;
+  const t=G.tanks[G.active]; if(!t||t.cpu) return;
+  const fine=keys["Shift"]?0.25:1;
+  if(e.key==="ArrowLeft") t.angle=clamp(t.angle+1*fine,0,180);
+  else if(e.key==="ArrowRight") t.angle=clamp(t.angle-1*fine,0,180);
+  else if(e.key==="ArrowUp") t.power=clamp(t.power+1*fine,0,MAX_POWER);
+  else if(e.key==="ArrowDown") t.power=clamp(t.power-1*fine,0,MAX_POWER);
+  else if(e.key==="Tab") cycleWeapon(t);
+  else if(e.key===" "||e.key==="Enter") fire(t);
+}
+function cycleWeapon(t){
+  const owned=Object.keys(WEAPONS).filter(k=>WEAPONS[k].unlimited||(t.inv[k]||0)>0);
+  let i=owned.indexOf(t.weapon);
+  t.weapon=owned[(i+1)%owned.length]; snd.click();
+}
+function summaryKey(e){
+  if(e.key!=="Enter") return;
+  if(G.round>=G.cfg.rounds){ G.screen="GAMEOVER"; }
+  else {
+    G.round++;
+    for(const t of G.tanks) t.cash = Math.round(t.cash*(1+ECON.interest)); // interest
+    enterRound();
+  }
+}
+
+// held-key continuous adjust
+function handleHeld(){
+  if(G.screen!=="BATTLE"||G.state!=="AIM") return;
+  const t=G.tanks[G.active]; if(!t||t.cpu) return;
+  const fine=keys["Shift"]?0.3:1;
+  if(keys["ArrowLeft"]) t.angle=clamp(t.angle+0.8*fine,0,180);
+  if(keys["ArrowRight"]) t.angle=clamp(t.angle-0.8*fine,0,180);
+  if(keys["ArrowUp"]) t.power=clamp(t.power+0.6*fine,0,MAX_POWER);
+  if(keys["ArrowDown"]) t.power=clamp(t.power-0.6*fine,0,MAX_POWER);
+}
+
+//================================================================
+// MAIN LOOP
+//================================================================
+let last=performance.now();
+function loop(now){
+  const dt=Math.min(2,(now-last)/16.67); last=now;
+  update(dt);
+  draw();
+  requestAnimationFrame(loop);
+}
+function update(dt){
+  handleHeld();
+  moveActiveTank(dt);
+  syncTouchUI();
+  // flash decay
+  if(G.flash>0) G.flash=Math.max(0,G.flash-dt*0.06);
+  // tank flash decay
+  for(const t of G.tanks) if(t.flashT>0) t.flashT=Math.max(0,t.flashT-dt*0.03);
+  // explosions
+  for(const e of G.explosions) e.t+=dt*0.016;
+  G.explosions=G.explosions.filter(e=>e.t<0.5);
+
+  if(G.screen!=="BATTLE") return;
+
+  if(G.napalm.length) updateNapalm(dt);
+
+  if(G.state==="FIRING"){
+    stepProjectiles(dt);
+    // wait for projectiles AND lingering napalm to finish before settling
+    if(G.proj.length===0 && G.napalm.length===0){ G.state="SETTLE"; G.settleT=0; }
+  }
+  else if(G.state==="SETTLE"){
+    G.settleT=(G.settleT||0)+dt*0.016;
+    const moving=settleTanks();
+    if(!moving && G.explosions.length===0 && G.napalm.length===0 && G.settleT>0.4){
+      // check round end / next turn
+      if(aliveTanks().length<=1){ endRound(aliveTanks()[0]); }
+      else nextTurn();
+    }
+  }
+}
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
