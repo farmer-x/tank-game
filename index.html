@@ -8,6 +8,8 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="theme-color" content="#000000">
 <title>SCORCHED EARTH</title>
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.4/build/qrcode.min.js"></script>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
   html, body {
@@ -182,6 +184,15 @@
     <button id="b-fire">FIRE</button>
   </div>
 </div>
+<!-- Join-code overlay: shown when player taps JOIN on the lobby screen -->
+<div id="mpjoin" style="display:none;position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);background:#0a0a2a;border:2px solid #4a4a66;border-radius:16px;padding:28px 36px;text-align:center;z-index:30;">
+  <div style="color:#9cf;font:bold 22px 'Courier New';margin-bottom:16px;">ENTER ROOM CODE</div>
+  <input id="mpcode" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="6" placeholder="______"
+    style="font:bold 38px 'Courier New';width:220px;text-align:center;background:#161630;color:#fff;border:2px solid #4a4a66;border-radius:8px;padding:10px 4px;letter-spacing:10px;">
+  <br><br>
+  <button id="mpconnbtn" style="font:bold 18px 'Courier New';background:linear-gradient(#2a3a4a,#1a2a3a);color:#9cf;border:2px solid #556;border-radius:10px;padding:10px 28px;cursor:pointer;margin-right:10px;">CONNECT</button>
+  <button id="mpcancelbtn" style="font:bold 14px 'Courier New';background:transparent;color:#666;border:1px solid #333;border-radius:8px;padding:8px 16px;cursor:pointer;">cancel</button>
+</div>
 <script>
 "use strict";
 //================================================================
@@ -277,29 +288,139 @@ const snd = {
   click(){ tone(600,800,0.05,"sine",0.2); },
 };
 
+// ---- Multiplayer state (PeerJS WebRTC) -------------------------
+const MP = {
+  on:false, role:null, myIdx:0,
+  peer:null, conn:null,
+  code:"", status:"", qrCanvas:null,
+};
+const HAS_PEERJS = typeof Peer !== 'undefined' && typeof QRCode !== 'undefined';
+
+function sendMP(data){ try{ if(MP.conn && MP.conn.open) MP.conn.send(data); }catch(e){} }
+
+function startMPHost(){
+  if(!HAS_PEERJS){ MP.status="Need internet for multiplayer"; G.screen="LOBBY"; return; }
+  MP.on=true; MP.role="host"; MP.myIdx=0;
+  G.round=1; G.cfg.players=2;
+  createTanks(2); G.tanks.forEach(t=>t.cpu=false);
+  initPeerHost();
+}
+function startMPJoin(code){
+  MP.on=true; MP.role="join"; MP.myIdx=1;
+  G.round=1; G.cfg.players=2;
+  createTanks(2); G.tanks.forEach(t=>t.cpu=false);
+  initPeerJoin(code);
+}
+function initPeerHost(){
+  MP.code = String(Math.floor(100000+Math.random()*900000));
+  MP.status="creating…"; G.screen="LOBBY";
+  MP.peer = new Peer("tankw-"+MP.code, {debug:0});
+  MP.peer.on('open', ()=>{
+    MP.status="waiting";
+    const url = location.origin+location.pathname+"?join="+MP.code;
+    const c=document.createElement("canvas");
+    QRCode.toCanvas(c, url, {width:220,margin:1,color:{dark:"#000",light:"#fff"}}, ()=>{ MP.qrCanvas=c; });
+  });
+  MP.peer.on('connection', conn=>{
+    MP.conn=conn;
+    conn.on('open', ()=>{ MP.status="connected"; setTimeout(launchMPBattle,600); });
+    conn.on('data', handleMPData);
+    conn.on('close', ()=>mpDisconnect());
+    conn.on('error', e=>{ MP.status="error: "+e.type; });
+  });
+  MP.peer.on('error', e=>{ MP.status="err: "+e.type; });
+}
+function initPeerJoin(code){
+  MP.status="connecting…"; G.screen="LOBBY";
+  MP.peer = new Peer({debug:0});
+  MP.peer.on('open', ()=>{
+    MP.conn = MP.peer.connect("tankw-"+code, {reliable:true});
+    MP.conn.on('open', ()=>{ MP.status="connected — waiting for host…"; });
+    MP.conn.on('data', handleMPData);
+    MP.conn.on('close', ()=>mpDisconnect());
+    MP.conn.on('error', e=>{ MP.status="error: "+e.type; });
+  });
+  MP.peer.on('error', e=>{ MP.status="err: "+e.type; });
+}
+function launchMPBattle(){
+  // Host computes seed, wind, positions; sends to joiner; both apply identically.
+  const seed=Math.floor(Math.random()*2**30);
+  rollWind();
+  const n=G.tanks.length;
+  const positions=Array.from({length:n},(_,i)=>clamp(Math.floor((i+0.5)/n*W+rnd(-40,40)),40,W-40));
+  sendMP({type:"battle", seed, wind:G.wind, round:G.round, positions, cfg:{rounds:G.cfg.rounds, terrain:G.cfg.terrain}});
+  applyMPBattle(seed, G.wind, positions);
+}
+function applyMPBattle(seed, wind, positions){
+  G.terrain=genTerrain(G.cfg.terrain, seed);
+  G.wind=wind;
+  resetForRound(positions);
+  G.proj=[]; G.napalm=[]; G.explosions=[]; G.speech=null; G.flash=0;
+  G.active=0; G.winner=-1; G.msg=""; G.screen="BATTLE";
+  G.state = (MP.myIdx===0) ? "AIM" : "WATCH";
+  G.tanks[G.active].moveUsed=0;
+}
+function handleMPData(data){
+  if(data.type==="battle"){
+    G.cfg.rounds=data.cfg.rounds; G.cfg.terrain=data.cfg.terrain;
+    G.round=data.round;
+    applyMPBattle(data.seed, data.wind, data.positions);
+  } else if(data.type==="action"){
+    const t=G.tanks[G.active];
+    t.x=data.x; t.y=G.terrain[clamp(Math.round(t.x),0,W-1)];
+    t.weapon=data.weapon; t.angle=data.angle; t.power=data.power;
+    if(G.state==="WATCH") fire(t);
+  } else if(data.type==="next"){
+    G.round=data.round;
+    for(const t of G.tanks) t.cash=Math.round(t.cash*(1+ECON.interest));
+    applyMPBattle(data.seed, data.wind, data.positions);
+  } else if(data.type==="gameover"){
+    G.screen="GAMEOVER";
+  }
+}
+function mpDisconnect(){
+  MP.status="disconnected"; G.msg="Connection lost";
+  setTimeout(()=>{ cleanupMP(); G.screen="MENU"; }, 3000);
+}
+function cleanupMP(){
+  try{ if(MP.peer) MP.peer.destroy(); }catch(e){}
+  MP.peer=null; MP.conn=null; MP.on=false; MP.role=null; MP.status=""; MP.qrCanvas=null;
+}
+
+// ---- Seeded RNG (mulberry32) — used so both MP clients get identical terrain ---
+function mulberry32(seed){
+  return function(){
+    seed |= 0; seed = seed + 0x6D2B79F5 | 0;
+    let t = Math.imul(seed ^ seed >>> 15, 1 | seed);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+
 // ---- Terrain generation (midpoint displacement) ----------------
-function genTerrain(type){
+// Pass a seed (integer) in MP mode so both clients produce identical terrain.
+function genTerrain(type, seed){
+  const R = (seed != null) ? mulberry32(seed) : Math.random;
+  const r = (a,b) => a + R()*(b-a);
   const t = new Float32Array(W);
   let rough, base;
   if(type==="flat"){ rough=8; base=H*0.78; }
   else if(type==="hilly"){ rough=40; base=H*0.62; }
   else if(type==="mountain"){ rough=90; base=H*0.5; }
-  else { rough=20+Math.random()*70; base=H*(0.5+Math.random()*0.25); }
+  else { rough=20+R()*70; base=H*(0.5+R()*0.25); }
 
-  // midpoint displacement on a power-of-two grid then sample
-  const N = 1025; // 2^10+1
+  const N = 1025;
   const h = new Float32Array(N);
-  h[0]=base+rnd(-rough,rough); h[N-1]=base+rnd(-rough,rough);
+  h[0]=base+r(-rough,rough); h[N-1]=base+r(-rough,rough);
   let step=N-1, scale=rough;
   while(step>1){
     const half=step>>1;
     for(let i=half;i<N;i+=step){
       const a=h[i-half], b=h[i+half<N? i+half : N-1];
-      h[i]=(a+b)/2 + rnd(-scale,scale);
+      h[i]=(a+b)/2 + r(-scale,scale);
     }
     step=half; scale*=0.55;
   }
-  // sample + clamp + smooth
   for(let x=0;x<W;x++){ t[x]=h[Math.floor(x/W*(N-1))]; }
   for(let pass=0;pass<3;pass++){
     for(let x=1;x<W-1;x++) t[x]=(t[x-1]+t[x]+t[x+1])/3;
@@ -326,11 +447,12 @@ function createTanks(n){
   }
 }
 // Per-round reset: battle state only; keep cash + inventory.
-function resetForRound(){
+// positions[] is optional; if provided (MP mode) tanks are placed at those exact x coords.
+function resetForRound(positions){
   const n=G.tanks.length;
   for(let i=0;i<n;i++){
     const t=G.tanks[i];
-    const x = Math.floor((i+0.5)/n * W + rnd(-40,40));
+    const x = positions ? positions[i] : Math.floor((i+0.5)/n * W + rnd(-40,40));
     t.x = clamp(x,40,W-40);
     t.health=200; t.alive=true; t.flashT=0;
     t.angle=45; t.power=40; t.roundDamage=0; t.roundKills=0; t.lastEarn=0;
@@ -418,6 +540,10 @@ function fire(t){
   G.proj.push(mkProj(bx,by,vx,vy,t.weapon,t.idx,wp));
   snd.fire();
   G.state="FIRING";
+  // Notify peer of our shot so they can replay it identically
+  if(MP.on && t.idx===MP.myIdx){
+    sendMP({type:"action", weapon:t.weapon, angle:t.angle, power:t.power, x:t.x});
+  }
 }
 function mkProj(x,y,vx,vy,weap,owner,wp,opts){
   return Object.assign({x,y,vx,vy,weap,owner,wp,trail:[],split:wp.mirv?false:true,dead:false}, opts||{});
@@ -653,9 +779,10 @@ function nextTurn(){
     idx=(idx+1)%G.tanks.length;
     if(G.tanks[idx].alive){ G.active=idx; break; }
   }
-  G.state="AIM";
   const at=G.tanks[G.active];
   at.moveUsed=0;
+  // In MP: if opponent's turn, enter WATCH state and wait for their action message
+  G.state = (MP.on && at.idx!==MP.myIdx) ? "WATCH" : "AIM";
   if(at.cpu) setTimeout(()=>cpuTurn(at), 600);
 }
 function endRound(winnerTank){
@@ -735,6 +862,7 @@ function pick(a){ return a[Math.floor(Math.random()*a.length)]; }
 function draw(){
   ctx.clearRect(0,0,W,H);
   if(G.screen==="MENU"){ drawMenu(); return; }
+  if(G.screen==="LOBBY"){ drawLobby(); return; }
   if(G.screen==="BUYING"){ drawBuying(); return; }
   if(G.screen==="GAMEOVER"){ drawGameOver(); return; }
   drawSky();
@@ -884,9 +1012,93 @@ function drawHUD(){
   ctx.textBaseline="alphabetic";
 }
 
+// ---- Lobby screen (online multiplayer host/join) ----------------
+function drawLobby(){
+  drawSky();
+  ctx.fillStyle="rgba(0,0,0,0.88)"; ctx.fillRect(0,0,W,H);
+  ctx.textAlign="center";
+  ctx.fillStyle="#ffe23b"; ctx.font="bold 36px 'Courier New'";
+  ctx.fillText("ONLINE MULTIPLAYER", W/2, 72);
+
+  if(!MP.role){
+    // Choice screen
+    ctx.fillStyle="#9cf"; ctx.font="20px 'Courier New'";
+    ctx.fillText("Play with a friend over WiFi or internet", W/2, 118);
+    const btns=[{label:"HOST GAME",x:W/2-210,desc:"You host · share QR/code"},
+                {label:"JOIN GAME", x:W/2+210,desc:"Scan QR or enter code"}];
+    btns.forEach(b=>{
+      ctx.fillStyle="#1a2a3a"; ctx.strokeStyle="#4a6a9a"; ctx.lineWidth=2;
+      ctx.beginPath(); ctx.roundRect(b.x-140,160,280,120,14); ctx.fill(); ctx.stroke();
+      ctx.fillStyle="#ffe23b"; ctx.font="bold 26px 'Courier New'";
+      ctx.fillText(b.label, b.x, 220);
+      ctx.fillStyle="#888"; ctx.font="14px 'Courier New'";
+      ctx.fillText(b.desc, b.x, 250);
+    });
+  } else if(MP.role==="host"){
+    if(MP.status==="waiting"){
+      ctx.fillStyle="#9cf"; ctx.font="18px 'Courier New'";
+      ctx.fillText("Share this code or let friend scan the QR", W/2, 115);
+      // QR code
+      if(MP.qrCanvas){
+        ctx.save(); ctx.fillStyle="#fff"; const qs=230;
+        ctx.fillRect(W/2-qs/2-8, 130, qs+16, qs+16);
+        ctx.drawImage(MP.qrCanvas, W/2-qs/2, 138, qs, qs);
+        ctx.restore();
+      } else {
+        ctx.fillStyle="#555"; ctx.font="16px 'Courier New'";
+        ctx.fillText("Generating QR…", W/2, 260);
+      }
+      ctx.fillStyle="#fff"; ctx.font="bold 28px 'Courier New'";
+      ctx.fillText("Code: "+MP.code, W/2, 400);
+      ctx.fillStyle="#666"; ctx.font="16px 'Courier New'";
+      ctx.fillText("Waiting for player to connect…", W/2, 436);
+    } else if(MP.status==="connected"){
+      ctx.fillStyle="#3f3"; ctx.font="bold 30px 'Courier New'";
+      ctx.fillText("Player 2 connected!", W/2, 280);
+      ctx.fillStyle="#9cf"; ctx.font="20px 'Courier New'";
+      ctx.fillText("Starting battle…", W/2, 330);
+    } else {
+      ctx.fillStyle="#fa0"; ctx.font="18px 'Courier New'";
+      ctx.fillText(MP.status, W/2, 300);
+    }
+  } else if(MP.role==="join"){
+    const col = MP.status.startsWith("err")?"#f55":MP.status==="connected — waiting for host…"?"#3f3":"#fa0";
+    ctx.fillStyle=col; ctx.font="18px 'Courier New'";
+    ctx.fillText(MP.status, W/2, 300);
+    if(MP.status==="connected — waiting for host…"){
+      ctx.fillStyle="#666"; ctx.font="14px 'Courier New'";
+      ctx.fillText("Host is setting up the battle…", W/2, 340);
+    }
+  }
+
+  // Back button
+  ctx.fillStyle="rgba(255,255,255,0.18)"; ctx.fillRect(W/2-80, 548, 160, 34);
+  ctx.fillStyle="#888"; ctx.font="16px 'Courier New'";
+  ctx.fillText("← Back to menu", W/2, 570);
+  ctx.textAlign="left";
+}
+function lobbyTap(cx, cy){
+  if(cy>=545 && cy<=585){ // back button
+    cleanupMP(); G.screen="MENU"; return;
+  }
+  if(!MP.role){
+    if(cy>=160 && cy<=280){
+      if(cx < W/2){
+        startMPHost();
+      } else {
+        MP.role="join"; G.screen="LOBBY";
+        const el=document.getElementById("mpjoin");
+        el.style.display="block";
+        document.getElementById("mpcode").value="";
+        setTimeout(()=>document.getElementById("mpcode").focus(), 50);
+      }
+    }
+  }
+}
+
 // ---- Menu -------------------------------------------------------
 const MENU_ITEMS = [
-  {key:"mode",    label:"Mode",    opts:["vs cpu","2 player"]},
+  {key:"mode",    label:"Mode",    opts:["vs cpu","2 player","online"]},
   {key:"rounds",  label:"Rounds",  opts:[1,3,5,10]},
   {key:"wind",    label:"Wind",    opts:["none","low","med","high","random"]},
   {key:"terrain", label:"Terrain", opts:["flat","hilly","mountain","random"]},
@@ -954,7 +1166,9 @@ function drawSummary(){
   ctx.fillText(`Kill ${money(ECON.kill)} · Damage ${money(ECON.dmgPerHp)}/hp · Survive ${money(ECON.survive)} · Last tank ${money(ECON.lastTank)}`, W/2, 470);
   ctx.fillStyle="#9cf"; ctx.font="bold 20px 'Courier New'";
   const last = G.round>=G.cfg.rounds;
-  ctx.fillText(last?"Tap / Enter for FINAL RESULTS":`Tap / Enter — shop & round ${G.round+1}  (+${Math.round(ECON.interest*100)}% interest)`, W/2, 520);
+  const mpWait = MP.on && MP.role==="join";
+  ctx.fillText(mpWait?"Waiting for host to continue…":
+    last?"Tap / Enter for FINAL RESULTS":`Tap / Enter — shop & round ${G.round+1}  (+${Math.round(ECON.interest*100)}% interest)`, W/2, 520);
   ctx.textAlign="left";
 }
 
@@ -1026,6 +1240,7 @@ addEventListener("keydown",e=>{
   keys[e.key]=true;
   ac(); // unlock audio on first key
   if(G.screen==="MENU") menuKey(e);
+  else if(G.screen==="LOBBY" && e.key==="Escape"){ cleanupMP(); G.screen="MENU"; }
   else if(G.screen==="BATTLE") battleKey(e);
   else if(G.screen==="SUMMARY") summaryKey(e);
   else if(G.screen==="BUYING") buyingKey(e);
@@ -1254,6 +1469,7 @@ function onTap(clientX, clientY){
   ac();
   const p = screenToCanvas(clientX, clientY);
   if(G.screen==="MENU") menuTap(p.x, p.y);
+  else if(G.screen==="LOBBY") lobbyTap(p.x, p.y);
   else if(G.screen==="SUMMARY") summaryKey({key:"Enter"});
   else if(G.screen==="BUYING") buyingTap(p.x, p.y);
   else if(G.screen==="GAMEOVER"){ G.screen="MENU"; G.menuSel=0; }
@@ -1327,10 +1543,11 @@ function assignRoles(){
 }
 function beginGame(){
   goFullscreen();
+  if(G.cfg.mode==="online"){ MP.role=null; G.screen="LOBBY"; return; }
   G.round=1;
   createTanks(G.cfg.players);
   assignRoles();
-  enterRound();                 // round 1: $0, so straight to battle
+  enterRound();
 }
 function battleKey(e){
   if(G.state!=="AIM") return;
@@ -1350,11 +1567,23 @@ function cycleWeapon(t){
 }
 function summaryKey(e){
   if(e.key!=="Enter") return;
-  if(G.round>=G.cfg.rounds){ G.screen="GAMEOVER"; }
-  else {
+  if(MP.on && MP.role==="join") return; // joiner waits for host to advance
+  if(G.round>=G.cfg.rounds){
+    if(MP.on) sendMP({type:"gameover"});
+    G.screen="GAMEOVER";
+  } else {
     G.round++;
-    for(const t of G.tanks) t.cash = Math.round(t.cash*(1+ECON.interest)); // interest
-    enterRound();
+    for(const t of G.tanks) t.cash=Math.round(t.cash*(1+ECON.interest));
+    if(MP.on){
+      const seed=Math.floor(Math.random()*2**30);
+      rollWind();
+      const n=G.tanks.length;
+      const positions=Array.from({length:n},(_,i)=>clamp(Math.floor((i+0.5)/n*W+rnd(-40,40)),40,W-40));
+      sendMP({type:"next", seed, wind:G.wind, round:G.round, positions});
+      applyMPBattle(seed, G.wind, positions);
+    } else {
+      enterRound();
+    }
   }
 }
 
@@ -1372,6 +1601,31 @@ function handleHeld(){
 //================================================================
 // MAIN LOOP
 //================================================================
+// ---- MP join overlay buttons ------------------------------------
+(function(){
+  const elJ=document.getElementById("mpjoin");
+  const elC=document.getElementById("mpcode");
+  document.getElementById("mpconnbtn").addEventListener("click",()=>{
+    const code=elC.value.replace(/\D/g,"").slice(0,6);
+    if(code.length<4){ elC.style.borderColor="#f55"; return; }
+    elJ.style.display="none";
+    startMPJoin(code);
+  });
+  document.getElementById("mpcancelbtn").addEventListener("click",()=>{
+    elJ.style.display="none";
+    MP.role=null; MP.status=""; G.screen="LOBBY";
+  });
+  elC.addEventListener("keydown",e=>{ if(e.key==="Enter") document.getElementById("mpconnbtn").click(); });
+
+  // Auto-join if URL contains ?join=CODE (opened by scanning the QR code)
+  const joinCode=new URLSearchParams(location.search).get("join");
+  if(joinCode && HAS_PEERJS){
+    goFullscreen();
+    G.cfg.mode="online";
+    startMPJoin(joinCode);
+  }
+})();
+
 let last=performance.now();
 function loop(now){
   const dt=Math.min(2,(now-last)/16.67); last=now;
