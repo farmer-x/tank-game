@@ -199,7 +199,7 @@ const GRAVITY = 0.18;
 const SPEED_SCALE = 0.16;
 const WIND_ACCEL = 0.0002;        // per-frame vx nudge per unit of wind
 const MAX_POWER = 100;
-const DMG_SCALE = 0.4;            // lower = tanks survive more hits
+const DMG_SCALE = 0.6;            // lower = tanks survive more hits
 const PLAYER_COLORS = ["#ff3b3b","#3bff5b","#3b8bff","#ffe23b","#3bffe2","#ff3be2","#ff9b3b","#ffffff"];
 const PLAYER_NAMES  = ["Player 1","Player 2","Player 3","Player 4","Player 5","Player 6"];
 
@@ -217,14 +217,16 @@ const WEAPONS = {
   hroller:{ name:"Heavy Roller", radius:90,  dmg:1.3, type:"roller", cost:6750, bundle:2 },
   dirtball:{name:"Dirt Ball",    radius:70,  dmg:0,   type:"dirt", cost:5000, bundle:5 },
   tondirt:{ name:"Ton of Dirt",  radius:130, dmg:0,   type:"dirt", cost:6750, bundle:2 },
-  digger: { name:"Digger",       radius:48,  dmg:1.0, type:"digger", cost:2500, bundle:5 },
+  digger:      { name:"Digger",       radius:48,  dmg:1.0, type:"digger",    cost:2500, bundle:5 },
+  deflector:   { name:"Deflector",    radius:0,   dmg:0,   type:"accessory", subtype:"deflect", cost:3000, bundle:3 },
+  forceshield: { name:"Force Shield", radius:0,   dmg:0,   type:"accessory", subtype:"shield",  cost:8000, bundle:1, shieldHp:75 },
 };
 // Buyable weapons (anything with a cost), in shop order.
 const SHOP = Object.keys(WEAPONS).filter(k=>WEAPONS[k].cost>0);
 // Economy: payouts + interest on cash held between rounds.
 const ECON = { kill:5000, dmgPerHp:10, survive:3000, lastTank:5000, interest:0.05 };
 // Fresh inventory: only the free, unlimited Baby Missile to start.
-const STARTING_INV = () => ({ baby:Infinity, missile:0, babynuke:0, nuke:0, mirv:0 });
+const STARTING_INV = () => ({ baby:Infinity, deflector:3, missile:0, babynuke:0, nuke:0, mirv:0 });
 
 const QUIPS_ATTACK = ["Eat this!","Fire in the hole!","INCOMING!","Oops. Meant to do that.","This one's for you, pal.","You can't hide forever..."];
 const QUIPS_DEATH  = ["Aargh!","I'll be back!","You got lucky...","Direct hit... on me."];
@@ -315,10 +317,11 @@ function createTanks(n){
   for(let i=0;i<n;i++){
     G.tanks.push({
       idx:i, name:PLAYER_NAMES[i], color:PLAYER_COLORS[i],
-      x:0, y:0, health:100, alive:true,
+      x:0, y:0, health:200, alive:true,
       angle:45, power:40, weapon:"baby",
       inv: STARTING_INV(), cash:0, cpu:false,
       flashT:0, roundDamage:0, roundKills:0, lastEarn:0,
+      shieldHp:0, moveUsed:0,
     });
   }
 }
@@ -329,8 +332,11 @@ function resetForRound(){
     const t=G.tanks[i];
     const x = Math.floor((i+0.5)/n * W + rnd(-40,40));
     t.x = clamp(x,40,W-40);
-    t.health=100; t.alive=true; t.flashT=0;
+    t.health=200; t.alive=true; t.flashT=0;
     t.angle=45; t.power=40; t.roundDamage=0; t.roundKills=0; t.lastEarn=0;
+    t.moveUsed=0;
+    t.shieldHp = (t.inv.forceshield||0) * (WEAPONS.forceshield.shieldHp);
+    t.inv.forceshield = 0;
     if(!(t.inv[t.weapon]>0) && !WEAPONS[t.weapon].unlimited) t.weapon="baby";
     settleTank(t);
   }
@@ -570,7 +576,7 @@ function updateNapalm(dt){
     // burn nearby tanks
     for(const t of G.tanks){
       if(!t.alive) continue;
-      if(Math.hypot(t.x-n.x,(t.y-6)-n.y)<16) damageTank(t, n.dmg*1.1*dt, n.owner);
+      if(Math.hypot(t.x-n.x,(t.y-6)-n.y)<16) damageTank(t, n.dmg*0.18*dt, n.owner);
     }
   }
   G.napalm=G.napalm.filter(n=>n.life>0 && n.x>-20 && n.x<W+20);
@@ -605,6 +611,10 @@ function leapDetonate(p,x,y){
   }
 }
 function damageTank(t,dmg,owner){
+  // Deflector: each charge absorbs 50% of one damage event
+  if((t.inv.deflector||0)>0 && dmg>0.5){ dmg*=0.5; t.inv.deflector--; }
+  // Force Shield: absorbs HP damage before hull
+  if(t.shieldHp>0 && dmg>0){ const a=Math.min(t.shieldHp,dmg); t.shieldHp-=a; dmg-=a; }
   const applied = Math.min(dmg, t.health);   // actual HP removed
   t.health-=dmg; t.flashT=0.4;
   // Credit the firer (no self-credit) for damage + kills.
@@ -645,6 +655,7 @@ function nextTurn(){
   }
   G.state="AIM";
   const at=G.tanks[G.active];
+  at.moveUsed=0;
   if(at.cpu) setTimeout(()=>cpuTurn(at), 600);
 }
 function endRound(winnerTank){
@@ -773,10 +784,29 @@ function drawTanks(){
     ctx.strokeStyle=col; ctx.lineWidth=3;
     ctx.beginPath(); ctx.moveTo(0,-7);
     ctx.lineTo(Math.cos(rad)*16, -7-Math.sin(rad)*16); ctx.stroke();
-    // health bar
+    // health bar (max 200)
     ctx.fillStyle="#400"; ctx.fillRect(-10,-16,20,3);
-    ctx.fillStyle = t.health>50?"#3f3":t.health>25?"#ff3":"#f33";
-    ctx.fillRect(-10,-16,20*t.health/100,3);
+    ctx.fillStyle = t.health>100?"#3f3":t.health>50?"#ff3":"#f33";
+    ctx.fillRect(-10,-16,20*clamp(t.health/200,0,1),3);
+    // shield bar (cyan, above health bar)
+    if(t.shieldHp>0){
+      ctx.fillStyle="#025"; ctx.fillRect(-10,-20,20,3);
+      ctx.fillStyle="#4ff"; ctx.fillRect(-10,-20,20*clamp(t.shieldHp/75,0,1),3);
+      ctx.strokeStyle="rgba(0,255,255,0.5)"; ctx.lineWidth=1.5;
+      ctx.strokeRect(-13,-11,26,16);
+    }
+    // deflector badge (magenta pill above bars)
+    if((t.inv.deflector||0)>0){
+      ctx.font="bold 7px 'Courier New'"; ctx.textAlign="center";
+      ctx.fillStyle="#c0c"; ctx.fillText("DEF×"+(t.inv.deflector), 0, t.shieldHp>0?-23:-20);
+    }
+    // move budget bar (blue, only on active human turn)
+    if(t.idx===G.active && !t.cpu){
+      const frac=clamp(1-(t.moveUsed||0)/MOVE_BUDGET,0,1);
+      ctx.fillStyle="#113"; ctx.fillRect(-10,-13,20,2);
+      ctx.fillStyle=frac>0.5?"#3af":frac>0.1?"#fa0":"#f44";
+      ctx.fillRect(-10,-13,20*frac,2);
+    }
     if(blink){ ctx.strokeStyle="#fff"; ctx.lineWidth=1; ctx.strokeRect(-12,-12,24,14); }
     ctx.restore();
   }
@@ -849,7 +879,8 @@ function drawHUD(){
   ctx.fillStyle="#9cf"; ctx.fillText(`${dir} ${Math.abs(Math.round(G.wind))}`, W-200, 30);
   ctx.fillStyle="#aaa"; ctx.font="12px 'Courier New'";
   ctx.fillText(`Round ${G.round}/${G.cfg.rounds}`, 12, 30);
-  ctx.fillText(`HP ${Math.round(t.health)}  $${t.cash}`, 160, 30);
+  const shStr=t.shieldHp>0?`  SH:${Math.round(t.shieldHp)}`:"";
+  ctx.fillText(`HP ${Math.round(t.health)}${shStr}  $${t.cash}`, 160, 30);
   ctx.textBaseline="alphabetic";
 }
 
@@ -1112,6 +1143,7 @@ function fireActive(){ const t=canAim(); if(t) fire(t); }
 elFire.addEventListener("touchstart",e=>{ e.preventDefault(); ac(); fireActive(); },{passive:false});
 elFire.addEventListener("mousedown",e=>{ e.preventDefault(); ac(); fireActive(); });
 
+const MOVE_BUDGET = 100;          // 5 tank-widths (body = 20px) per turn
 // Move buttons: hold to drive the tank along the terrain.
 let moveHeld = 0;                 // -1 left, +1 right, 0 none
 function bindMove(id, dir){
@@ -1129,12 +1161,18 @@ bindMove("b-mleft",-1);
 bindMove("b-mright",1);
 function moveActiveTank(dt){
   const t=canAim(); if(!t) return;
+  if((t.moveUsed||0)>=MOVE_BUDGET) return;
   let dir=moveHeld;
   if(keys["a"]||keys["A"]) dir=-1;
   if(keys["d"]||keys["D"]) dir=1;
   if(!dir) return;
-  t.x = clamp(t.x + dir*2.2*dt, 16, W-16);
-  t.y = G.terrain[clamp(Math.round(t.x),0,W-1)];
+  const step=dir*2.2*dt;
+  const nx=clamp(t.x+step,16,W-16);
+  const dist=Math.abs(nx-t.x);
+  const remaining=MOVE_BUDGET-(t.moveUsed||0);
+  if(dist>=remaining){ t.x=clamp(t.x+dir*remaining,16,W-16); t.moveUsed=MOVE_BUDGET; }
+  else               { t.x=nx; t.moveUsed=(t.moveUsed||0)+dist; }
+  t.y=G.terrain[clamp(Math.round(t.x),0,W-1)];
 }
 
 // Weapon strip: rebuild for a given tank, tap a chip to select.
@@ -1144,6 +1182,7 @@ function buildWeaponStrip(t){
   if(!t) return;
   for(const key of Object.keys(WEAPONS)){
     const wp = WEAPONS[key];
+    if(wp.type==="accessory") continue;            // accessories aren't fired
     const cnt = wp.unlimited ? Infinity : (t.inv[key]||0);
     if(cnt<=0 && !wp.unlimited) continue;          // only show owned weapons
     const chip = document.createElement("div");
@@ -1305,7 +1344,7 @@ function battleKey(e){
   else if(e.key===" "||e.key==="Enter") fire(t);
 }
 function cycleWeapon(t){
-  const owned=Object.keys(WEAPONS).filter(k=>WEAPONS[k].unlimited||(t.inv[k]||0)>0);
+  const owned=Object.keys(WEAPONS).filter(k=>WEAPONS[k].type!=="accessory"&&(WEAPONS[k].unlimited||(t.inv[k]||0)>0));
   let i=owned.indexOf(t.weapon);
   t.weapon=owned[(i+1)%owned.length]; snd.click();
 }
