@@ -9,7 +9,7 @@
 <meta name="theme-color" content="#000000">
 <title>SCORCHED EARTH</title>
 <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.4/build/qrcode.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
   html, body {
@@ -184,7 +184,17 @@
     <button id="b-fire">FIRE</button>
   </div>
 </div>
-<!-- Join-code overlay: shown when player taps JOIN on the lobby screen -->
+<!-- HOST overlay -->
+<div id="mphost" style="display:none;position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);background:#0a0a2a;border:2px solid #4a4a66;border-radius:16px;padding:24px 32px;text-align:center;z-index:30;min-width:280px;">
+  <div style="color:#9cf;font:bold 20px 'Courier New';margin-bottom:10px;">ROOM CODE</div>
+  <div id="mphostcode" style="font:bold 52px 'Courier New';color:#ffe23b;letter-spacing:6px;margin:8px 0;"></div>
+  <div id="mpqrdiv" style="margin:14px auto;width:200px;height:200px;background:#fff;"></div>
+  <div style="color:#888;font:13px 'Courier New';">Scan QR or share code</div>
+  <div id="mphoststat" style="color:#aaa;font:15px 'Courier New';margin-top:10px;">Waiting for player…</div>
+  <br>
+  <button id="mphostcancelbtn" style="font:bold 13px 'Courier New';background:transparent;color:#555;border:1px solid #333;border-radius:8px;padding:6px 14px;cursor:pointer;">cancel</button>
+</div>
+<!-- JOIN overlay -->
 <div id="mpjoin" style="display:none;position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);background:#0a0a2a;border:2px solid #4a4a66;border-radius:16px;padding:28px 36px;text-align:center;z-index:30;">
   <div style="color:#9cf;font:bold 22px 'Courier New';margin-bottom:16px;">ENTER ROOM CODE</div>
   <input id="mpcode" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="6" placeholder="______"
@@ -294,17 +304,33 @@ const MP = {
   peer:null, conn:null,
   code:"", status:"", qrCanvas:null,
 };
-const HAS_PEERJS = typeof Peer !== 'undefined' && typeof QRCode !== 'undefined';
+const HAS_PEERJS = typeof Peer !== 'undefined';
 
 function sendMP(data){ try{ if(MP.conn && MP.conn.open) MP.conn.send(data); }catch(e){} }
 
 function startMPHost(){
-  if(!HAS_PEERJS){ MP.status="Need internet for multiplayer"; G.screen="LOBBY"; return; }
-  MP.on=true; MP.role="host"; MP.myIdx=0;
+  // Set role FIRST so the screen updates immediately with feedback
+  MP.role="host"; MP.myIdx=0; MP.on=true;
   G.round=1; G.cfg.players=2;
   createTanks(2); G.tanks.forEach(t=>t.cpu=false);
+  if(!HAS_PEERJS){
+    MP.status="PeerJS not loaded — check connection";
+    showHostOverlay(); return;
+  }
+  MP.status="connecting to peer server…";
+  showHostOverlay();
   initPeerHost();
 }
+function showHostOverlay(){
+  document.getElementById("mphostcode").textContent = MP.code || "……";
+  document.getElementById("mphoststat").textContent = MP.status;
+  document.getElementById("mphost").style.display = "block";
+}
+function updateHostOverlay(){
+  document.getElementById("mphoststat").textContent = MP.status;
+  if(MP.code) document.getElementById("mphostcode").textContent = MP.code;
+}
+function hideHostOverlay(){ document.getElementById("mphost").style.display = "none"; }
 function startMPJoin(code){
   MP.on=true; MP.role="join"; MP.myIdx=1;
   G.round=1; G.cfg.players=2;
@@ -313,22 +339,31 @@ function startMPJoin(code){
 }
 function initPeerHost(){
   MP.code = String(Math.floor(100000+Math.random()*900000));
-  MP.status="creating…"; G.screen="LOBBY";
+  MP.status="connecting…";
+  updateHostOverlay();
   MP.peer = new Peer("tankw-"+MP.code, {debug:0});
   MP.peer.on('open', ()=>{
-    MP.status="waiting";
+    MP.status="Waiting for player…";
+    updateHostOverlay();
+    document.getElementById("mphostcode").textContent = MP.code;
+    // Generate QR code into the div
     const url = location.origin+location.pathname+"?join="+MP.code;
-    const c=document.createElement("canvas");
-    QRCode.toCanvas(c, url, {width:220,margin:1,color:{dark:"#000",light:"#fff"}}, ()=>{ MP.qrCanvas=c; });
+    const qrDiv = document.getElementById("mpqrdiv");
+    qrDiv.innerHTML = "";
+    try{ new QRCode(qrDiv,{text:url,width:200,height:200,colorDark:"#000000",colorLight:"#ffffff"}); }catch(e){}
   });
   MP.peer.on('connection', conn=>{
     MP.conn=conn;
-    conn.on('open', ()=>{ MP.status="connected"; setTimeout(launchMPBattle,600); });
+    conn.on('open', ()=>{
+      MP.status="Player connected! Starting…";
+      updateHostOverlay();
+      setTimeout(()=>{ hideHostOverlay(); launchMPBattle(); }, 800);
+    });
     conn.on('data', handleMPData);
     conn.on('close', ()=>mpDisconnect());
-    conn.on('error', e=>{ MP.status="error: "+e.type; });
+    conn.on('error', e=>{ MP.status="error: "+e.type; updateHostOverlay(); });
   });
-  MP.peer.on('error', e=>{ MP.status="err: "+e.type; });
+  MP.peer.on('error', e=>{ MP.status="Error: "+e.type; updateHostOverlay(); });
 }
 function initPeerJoin(code){
   MP.status="connecting…"; G.screen="LOBBY";
@@ -380,11 +415,13 @@ function handleMPData(data){
 }
 function mpDisconnect(){
   MP.status="disconnected"; G.msg="Connection lost";
+  hideHostOverlay();
   setTimeout(()=>{ cleanupMP(); G.screen="MENU"; }, 3000);
 }
 function cleanupMP(){
   try{ if(MP.peer) MP.peer.destroy(); }catch(e){}
   MP.peer=null; MP.conn=null; MP.on=false; MP.role=null; MP.status=""; MP.qrCanvas=null;
+  hideHostOverlay();
 }
 
 // ---- Seeded RNG (mulberry32) — used so both MP clients get identical terrain ---
@@ -1603,6 +1640,10 @@ function handleHeld(){
 //================================================================
 // ---- MP join overlay buttons ------------------------------------
 (function(){
+  document.getElementById("mphostcancelbtn").addEventListener("click",()=>{
+    hideHostOverlay(); cleanupMP(); G.screen="LOBBY";
+  });
+
   const elJ=document.getElementById("mpjoin");
   const elC=document.getElementById("mpcode");
   document.getElementById("mpconnbtn").addEventListener("click",()=>{
