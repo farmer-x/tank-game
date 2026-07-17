@@ -303,6 +303,8 @@ const MP = {
   on:false, role:null, myIdx:0,
   peer:null, conn:null,
   code:"", status:"", qrCanvas:null,
+  pendingAction:null,   // buffered opponent shot received before WATCH state
+  nextBattle:null,      // {seed,wind,round,positions} stored during inter-round shop
 };
 const HAS_PEERJS = typeof Peer !== 'undefined';
 
@@ -387,6 +389,7 @@ function launchMPBattle(){
   applyMPBattle(seed, G.wind, positions);
 }
 function applyMPBattle(seed, wind, positions){
+  MP.pendingAction=null; // discard any stale action from the previous round
   G.terrain=genTerrain(G.cfg.terrain, seed);
   G.wind=wind;
   resetForRound(positions);
@@ -394,6 +397,15 @@ function applyMPBattle(seed, wind, positions){
   G.active=0; G.winner=-1; G.msg=""; G.screen="BATTLE";
   G.state = (MP.myIdx===0) ? "AIM" : "WATCH";
   G.tanks[G.active].moveUsed=0;
+  if(G.state==="WATCH") applyPendingAction();
+}
+function applyPendingAction(){
+  if(!MP.pendingAction) return;
+  const data=MP.pendingAction; MP.pendingAction=null;
+  const t=G.tanks[G.active];
+  t.x=data.x; t.y=G.terrain[clamp(Math.round(t.x),0,W-1)];
+  t.weapon=data.weapon; t.angle=data.angle; t.power=data.power;
+  fire(t);
 }
 function handleMPData(data){
   if(data.type==="battle"){
@@ -401,14 +413,18 @@ function handleMPData(data){
     G.round=data.round;
     applyMPBattle(data.seed, data.wind, data.positions);
   } else if(data.type==="action"){
-    const t=G.tanks[G.active];
-    t.x=data.x; t.y=G.terrain[clamp(Math.round(t.x),0,W-1)];
-    t.weapon=data.weapon; t.angle=data.angle; t.power=data.power;
-    if(G.state==="WATCH") fire(t);
+    // Buffer the action — our own shot may still be animating when this arrives.
+    MP.pendingAction = data;
+    if(G.state==="WATCH") applyPendingAction();
   } else if(data.type==="next"){
+    // Inter-round: joiner applies interest, shops, then starts battle.
     G.round=data.round;
     for(const t of G.tanks) t.cash=Math.round(t.cash*(1+ECON.interest));
-    applyMPBattle(data.seed, data.wind, data.positions);
+    MP.nextBattle={seed:data.seed, wind:data.wind, round:data.round, positions:data.positions};
+    G.tanks.forEach(t=>{ if(t.cpu) cpuBuy(t); });
+    G.buyer=nextHumanBuyer(-1);
+    if(G.buyer>=0){ G.buySel=0; G.screen="BUYING"; }
+    else { const nb=MP.nextBattle; MP.nextBattle=null; applyMPBattle(nb.seed,nb.wind,nb.positions); }
   } else if(data.type==="gameover"){
     G.screen="GAMEOVER";
   }
@@ -820,6 +836,7 @@ function nextTurn(){
   at.moveUsed=0;
   // In MP: if opponent's turn, enter WATCH state and wait for their action message
   G.state = (MP.on && at.idx!==MP.myIdx) ? "WATCH" : "AIM";
+  if(G.state==="WATCH") applyPendingAction();
   if(at.cpu) setTimeout(()=>cpuTurn(at), 600);
 }
 function endRound(winnerTank){
@@ -1286,9 +1303,19 @@ addEventListener("keydown",e=>{
 addEventListener("keyup",e=>{ keys[e.key]=false; });
 
 // ---- Shop input -------------------------------------------------
+function mpStartNextBattle(){
+  const nb=MP.nextBattle; MP.nextBattle=null;
+  sendMP({type:"next", seed:nb.seed, wind:nb.wind, round:nb.round, positions:nb.positions});
+  applyMPBattle(nb.seed, nb.wind, nb.positions);
+}
 function buyDone(){
   G.buyer = nextHumanBuyer(G.buyer);
   if(G.buyer>=0){ G.buySel=0; }
+  else if(MP.on && MP.role==="host" && MP.nextBattle){ mpStartNextBattle(); }
+  else if(MP.on && MP.role==="join" && MP.nextBattle){
+    const nb=MP.nextBattle; MP.nextBattle=null;
+    applyMPBattle(nb.seed, nb.wind, nb.positions);
+  }
   else startBattle();
 }
 function buyingKey(e){
@@ -1612,12 +1639,16 @@ function summaryKey(e){
     G.round++;
     for(const t of G.tanks) t.cash=Math.round(t.cash*(1+ECON.interest));
     if(MP.on){
+      // Host shops first; buyDone will call mpStartNextBattle when done.
       const seed=Math.floor(Math.random()*2**30);
       rollWind();
       const n=G.tanks.length;
       const positions=Array.from({length:n},(_,i)=>clamp(Math.floor((i+0.5)/n*W+rnd(-40,40)),40,W-40));
-      sendMP({type:"next", seed, wind:G.wind, round:G.round, positions});
-      applyMPBattle(seed, G.wind, positions);
+      MP.nextBattle={seed, wind:G.wind, round:G.round, positions};
+      G.tanks.forEach(t=>{ if(t.cpu) cpuBuy(t); });
+      G.buyer=nextHumanBuyer(-1);
+      if(G.buyer>=0){ G.buySel=0; G.screen="BUYING"; }
+      else mpStartNextBattle();
     } else {
       enterRound();
     }
